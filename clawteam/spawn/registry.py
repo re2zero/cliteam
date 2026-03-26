@@ -21,6 +21,7 @@ def register_agent(
     agent_name: str,
     backend: str,
     tmux_target: str = "",
+    block_id: str = "",
     pid: int = 0,
     command: list[str] | None = None,
 ) -> None:
@@ -30,6 +31,7 @@ def register_agent(
     registry[agent_name] = {
         "backend": backend,
         "tmux_target": tmux_target,
+        "block_id": block_id,
         "pid": pid,
         "command": command or [],
     }
@@ -61,6 +63,8 @@ def is_agent_alive(team_name: str, agent_name: str) -> bool | None:
             if pid:
                 return _pid_alive(pid)
         return alive
+    elif backend == "wsh":
+        return _wsh_block_alive(info.get("block_id", ""))
     elif backend == "subprocess":
         return _pid_alive(info.get("pid", 0))
     return None
@@ -96,6 +100,14 @@ def stop_agent(team_name: str, agent_name: str, timeout_seconds: float = 3.0) ->
         if target:
             subprocess.run(
                 ["tmux", "kill-window", "-t", target],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    elif backend == "wsh":
+        block_id = info.get("block_id", "")
+        if block_id:
+            subprocess.run(
+                ["wsh", "deleteblock", "-b", block_id],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -157,6 +169,31 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+def _wsh_block_alive(block_id: str) -> bool:
+    """Check if a wsh block is still alive."""
+    if not block_id:
+        return False
+
+    result = subprocess.run(
+        ["wsh", "blocks", "list", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+    if result.returncode != 0:
+        return False
+
+    try:
+        blocks = json.loads(result.stdout)
+        for block in blocks:
+            if block.get("blockid") == block_id:
+                return True
+    except json.JSONDecodeError:
+        pass
+
+    return False
+
+
 def _load(path: Path) -> dict:
     if path.exists():
         try:
@@ -168,11 +205,13 @@ def _load(path: Path) -> dict:
 
 def _save(path: Path, data: dict) -> None:
     import tempfile
+
     path.parent.mkdir(parents=True, exist_ok=True)
     # Atomic write
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         import os
+
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
         Path(tmp).replace(path)
