@@ -93,9 +93,11 @@ def test_respawn_stops_and_spawns(team_name):
         waiter._respawn_idle_worker("alice", spawn_info, cfg)
 
     mock_backend.spawn.assert_called_once()
-    call_kwargs = mock_backend.spawn.call_args
-    assert call_kwargs.kwargs["agent_name"] == "alice"
-    assert call_kwargs.kwargs["team_name"] == team_name
+    call_kwargs = mock_backend.spawn.call_args.kwargs
+    assert call_kwargs["agent_name"] == "alice"
+    assert call_kwargs["team_name"] == team_name
+    assert "Write tests" in call_kwargs.get("prompt", "")
+    assert "Worker Loop Protocol" in call_kwargs.get("prompt", "")
 
 
 def test_respawn_skips_when_no_pending_tasks(team_name):
@@ -121,14 +123,16 @@ def test_idle_skips_non_wsh_backends(team_name):
     with (
         patch("clawteam.config.load_config", return_value=MagicMock(idle_timeout=60.0)),
         patch("clawteam.spawn.registry.get_registry") as mock_reg,
-        patch.object(waiter, "_capture_wsh_output") as mock_capture,
+        patch.object(waiter, "_capture_wsh_output") as mock_wsh,
+        patch.object(waiter, "_capture_tmux_output") as mock_tmux,
     ):
         mock_reg.return_value = {
-            "alice": {"backend": "tmux", "tmux_target": "sess:win", "command": ["claude"]},
+            "alice": {"backend": "subprocess", "pid": 123, "command": ["claude"]},
         }
         waiter._check_idle_agents()
 
-    mock_capture.assert_not_called()
+    mock_wsh.assert_not_called()
+    mock_tmux.assert_not_called()
 
 
 def test_idle_skips_dead_agents(team_name):
@@ -169,7 +173,48 @@ def test_capture_wsh_output_returns_none_on_error(team_name):
     assert result is None
 
 
-def test_respawn_resets_idle_tracking(team_name):
+def test_capture_tmux_output_returns_content(team_name):
+    waiter = _make_waiter(team_name)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="pane content")
+        result = waiter._capture_tmux_output("sess:win")
+
+    assert result == "pane content"
+    mock_run.assert_called_once()
+
+
+def test_capture_tmux_output_returns_none_on_error(team_name):
+    waiter = _make_waiter(team_name)
+
+    with patch("subprocess.run", side_effect=RuntimeError("fail")):
+        result = waiter._capture_tmux_output("sess:win")
+
+    assert result is None
+
+
+def test_idle_detection_uses_tmux_backend(team_name):
+    waiter = _make_waiter(team_name, poll_interval=5.0)
+    initial_hash = hash("stable pane content")
+    waiter._output_hashes["alice"] = initial_hash
+    waiter._idle_counts["alice"] = 0
+
+    with (
+        patch("clawteam.config.load_config", return_value=MagicMock(idle_timeout=5.0)),
+        patch("clawteam.spawn.registry.get_registry") as mock_reg,
+        patch.object(waiter, "_capture_tmux_output", return_value="stable pane content"),
+        patch.object(waiter, "_respawn_idle_worker") as mock_respawn,
+    ):
+        mock_reg.return_value = {
+            "alice": {
+                "backend": "tmux",
+                "tmux_target": "sess:win",
+                "command": ["claude"],
+            },
+        }
+        waiter._check_idle_agents()
+
+    mock_respawn.assert_called_once()
     waiter = _make_waiter(team_name)
     spawn_info = {"backend": "wsh", "block_id": "block-1", "command": ["claude"]}
 

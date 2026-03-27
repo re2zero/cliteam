@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import time
 from dataclasses import dataclass, field
@@ -207,14 +208,13 @@ class TaskWaiter:
                 continue
 
             backend = info.get("backend", "")
-            if backend != "wsh":
+            if backend == "wsh":
+                content = self._capture_wsh_output(info.get("block_id", ""))
+            elif backend == "tmux":
+                content = self._capture_tmux_output(info.get("tmux_target", ""))
+            else:
                 continue
 
-            block_id = info.get("block_id", "")
-            if not block_id:
-                continue
-
-            content = self._capture_wsh_output(block_id)
             if content is None:
                 continue
 
@@ -235,6 +235,24 @@ class TaskWaiter:
             from clawteam.spawn.wsh_backend import _capture_block_output
 
             return _capture_block_output(block_id)
+        except Exception:
+            return None
+
+    def _capture_tmux_output(self, target: str) -> str | None:
+        import subprocess
+
+        if not target:
+            return None
+        try:
+            result = subprocess.run(
+                ["tmux", "capture-pane", "-t", target, "-p", "-S", "-50"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+            if result.returncode != 0:
+                return None
+            return result.stdout
         except Exception:
             return None
 
@@ -265,6 +283,19 @@ class TaskWaiter:
 
         try:
             from clawteam.spawn import get_backend
+            from clawteam.spawn.prompt import build_agent_prompt
+            from clawteam.team.manager import TeamManager
+
+            leader_name = TeamManager.get_leader_name(self.team_name) or "leader"
+            respawn_prompt = build_agent_prompt(
+                agent_name=agent_name,
+                agent_id=spawn_info.get("agent_id", ""),
+                agent_type="general-purpose",
+                team_name=self.team_name,
+                leader_name=leader_name,
+                task=next_task.subject,
+                user=os.environ.get("CLAWTEAM_USER", ""),
+            )
 
             backend = get_backend(spawn_info.get("backend", "wsh"))
             backend.spawn(
@@ -273,6 +304,9 @@ class TaskWaiter:
                 agent_id="",
                 agent_type="general-purpose",
                 team_name=self.team_name,
+                prompt=respawn_prompt,
+                cwd=spawn_info.get("cwd", ""),
+                skip_permissions=True,
             )
 
             from clawteam.team.manager import TeamManager
