@@ -12,3 +12,5 @@ venv/
 uv.lock
 .claude/*.local.md
 node_modules/
+.opencode/
+.trellis/
