@@ -173,6 +173,13 @@ def test_capture_wsh_output_returns_none_on_error(team_name):
     assert result is None
 
 
+def test_capture_wsh_output_returns_none_on_empty_id(team_name):
+    waiter = _make_waiter(team_name)
+
+    result = waiter._capture_wsh_output("")
+    assert result is None
+
+
 def test_capture_tmux_output_returns_content(team_name):
     waiter = _make_waiter(team_name)
 

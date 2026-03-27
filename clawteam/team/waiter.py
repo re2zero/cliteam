@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import time
@@ -231,6 +232,8 @@ class TaskWaiter:
                 self._respawn_idle_worker(agent_name, info, cfg)
 
     def _capture_wsh_output(self, block_id: str) -> str | None:
+        if not block_id:
+            return None
         try:
             from clawteam.spawn.wsh_backend import _capture_block_output
 
@@ -309,20 +312,17 @@ class TaskWaiter:
                 skip_permissions=True,
             )
 
-            from clawteam.team.manager import TeamManager
-
-            leader = TeamManager.get_leader_name(self.team_name) or "leader"
             self.mailbox.send(
                 from_agent=self.agent_name,
-                to=leader,
+                to=leader_name,
                 content=(
                     f"Worker '{agent_name}' was idle (no output for {cfg.idle_timeout:.0f}s). "
                     f"Killed and respawned. Assigned next task: {next_task.subject} "
                     f"({next_task.id})."
                 ),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("Watchdog: failed to respawn '%s': %s", agent_name, exc)
         finally:
             self._respawned_agents.discard(agent_name)
             self._output_hashes.pop(agent_name, None)
