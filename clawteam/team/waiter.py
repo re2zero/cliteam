@@ -62,6 +62,9 @@ class TaskWaiter:
         self._running = False
         self._messages_received = 0
         self._known_dead: set[str] = set()
+        self._output_hashes: dict[str, str] = {}
+        self._idle_counts: dict[str, int] = {}
+        self._respawned_agents: set[str] = set()
 
     def wait(self) -> WaitResult:
         """Block until all tasks are completed, timeout, or interrupted."""
@@ -91,7 +94,10 @@ class TaskWaiter:
                 # 2. Detect dead agents and recover their tasks
                 self._check_dead_agents()
 
-                # 3. Check task status
+                # 3. Detect idle-but-alive workers and auto-respawn
+                self._check_idle_agents()
+
+                # 4. Check task status
                 tasks = self.task_store.list_tasks()
                 total = len(tasks)
                 completed = sum(1 for t in tasks if t.status == TaskStatus.completed)
@@ -106,7 +112,7 @@ class TaskWaiter:
                         self.on_progress(completed, total, in_progress, pending, blocked)
                     last_summary = summary
 
-                # 4. All done?
+                # 5. All done?
                 if total > 0 and completed == total:
                     # Final drain — catch messages that arrived after task completion
                     for msg in self.mailbox.receive(self.agent_name, limit=50):
@@ -126,7 +132,7 @@ class TaskWaiter:
                         task_details=[_task_summary(t) for t in tasks],
                     )
 
-                # 5. Timeout?
+                # 6. Timeout?
                 elapsed = time.monotonic() - start
                 if self.timeout and elapsed >= self.timeout:
                     return WaitResult(
@@ -141,7 +147,7 @@ class TaskWaiter:
                         task_details=[_task_summary(t) for t in tasks],
                     )
 
-                # 6. Sleep
+                # 7. Sleep
                 time.sleep(self.poll_interval)
 
             # Interrupted
@@ -164,7 +170,6 @@ class TaskWaiter:
             signal.signal(signal.SIGINT, prev_sigint)
             signal.signal(signal.SIGTERM, prev_sigterm)
 
-
     def _check_dead_agents(self) -> None:
         """Detect dead agents and mark their in_progress tasks as pending."""
         try:
@@ -181,14 +186,113 @@ class TaskWaiter:
             # Find this agent's in_progress tasks and reset them
             tasks = self.task_store.list_tasks()
             abandoned = [
-                t for t in tasks
-                if t.owner == agent_name and t.status == TaskStatus.in_progress
+                t for t in tasks if t.owner == agent_name and t.status == TaskStatus.in_progress
             ]
             for t in abandoned:
                 self.task_store.update(t.id, status=TaskStatus.pending)
 
             if abandoned and self.on_agent_dead:
                 self.on_agent_dead(agent_name, abandoned)
+
+    def _check_idle_agents(self) -> None:
+        from clawteam.config import load_config
+        from clawteam.spawn.registry import get_registry, stop_agent
+
+        cfg = load_config()
+        idle_threshold = max(1, int(cfg.idle_timeout / self.poll_interval))
+        registry = get_registry(self.team_name)
+
+        for agent_name, info in registry.items():
+            if agent_name in self._known_dead or agent_name in self._respawned_agents:
+                continue
+
+            backend = info.get("backend", "")
+            if backend != "wsh":
+                continue
+
+            block_id = info.get("block_id", "")
+            if not block_id:
+                continue
+
+            content = self._capture_wsh_output(block_id)
+            if content is None:
+                continue
+
+            content_hash = hash(content)
+            last_hash = self._output_hashes.get(agent_name)
+
+            if content_hash == last_hash:
+                self._idle_counts[agent_name] = self._idle_counts.get(agent_name, 0) + 1
+            else:
+                self._idle_counts[agent_name] = 0
+            self._output_hashes[agent_name] = content_hash
+
+            if self._idle_counts.get(agent_name, 0) >= idle_threshold:
+                self._respawn_idle_worker(agent_name, info, cfg)
+
+    def _capture_wsh_output(self, block_id: str) -> str | None:
+        try:
+            from clawteam.spawn.wsh_backend import _capture_block_output
+
+            return _capture_block_output(block_id)
+        except Exception:
+            return None
+
+    def _respawn_idle_worker(self, agent_name: str, spawn_info: dict, cfg) -> None:
+        from clawteam.spawn.registry import stop_agent
+
+        stopped = stop_agent(self.team_name, agent_name)
+        if stopped is not True:
+            return
+
+        tasks = self.task_store.list_tasks()
+        next_task = None
+        for t in tasks:
+            if t.owner == agent_name and t.status == TaskStatus.pending:
+                next_task = t
+                break
+
+        if next_task is None:
+            self._respawned_agents.discard(agent_name)
+            return
+
+        command = spawn_info.get("command", [])
+        if not command:
+            self._respawned_agents.discard(agent_name)
+            return
+
+        self._respawned_agents.add(agent_name)
+
+        try:
+            from clawteam.spawn import get_backend
+
+            backend = get_backend(spawn_info.get("backend", "wsh"))
+            backend.spawn(
+                command=command,
+                agent_name=agent_name,
+                agent_id="",
+                agent_type="general-purpose",
+                team_name=self.team_name,
+            )
+
+            from clawteam.team.manager import TeamManager
+
+            leader = TeamManager.get_leader_name(self.team_name) or "leader"
+            self.mailbox.send(
+                from_agent=self.agent_name,
+                to=leader,
+                content=(
+                    f"Worker '{agent_name}' was idle (no output for {cfg.idle_timeout:.0f}s). "
+                    f"Killed and respawned. Assigned next task: {next_task.subject} "
+                    f"({next_task.id})."
+                ),
+            )
+        except Exception:
+            pass
+        finally:
+            self._respawned_agents.discard(agent_name)
+            self._output_hashes.pop(agent_name, None)
+            self._idle_counts.pop(agent_name, None)
 
 
 def _task_summary(task: TaskItem) -> dict:
