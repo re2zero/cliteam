@@ -46,10 +46,13 @@ def _wait_for_wsh_block(
     poll_interval_seconds: float = 0.5,
 ) -> bool:
     """Poll wsh until target block exists and is observable."""
+    wsh_bin = _find_wsh()
+    if not wsh_bin:
+        return False
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         result = subprocess.run(
-            ["wsh", "blocks", "list", "--json"],
+            [wsh_bin, "blocks", "list", "--json"],
             capture_output=True,
             text=True,
             timeout=5.0,
@@ -67,10 +70,20 @@ def _wait_for_wsh_block(
     return False
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
 def _capture_block_output(block_id: str, tail_lines: int = 100) -> str:
     """Capture terminal output from a block via wavefile protocol."""
+    wsh_bin = _find_wsh()
+    if not wsh_bin:
+        return ""
     result = subprocess.run(
-        ["wsh", "file", "cat", f"wavefile://{block_id}/term"],
+        [wsh_bin, "file", "cat", f"wavefile://{block_id}/term"],
         capture_output=True,
         text=True,
         timeout=10.0,
@@ -78,10 +91,11 @@ def _capture_block_output(block_id: str, tail_lines: int = 100) -> str:
     if result.returncode != 0:
         return ""
 
+    cleaned = _strip_ansi(result.stdout)
     if tail_lines > 0:
-        lines = result.stdout.splitlines()
+        lines = cleaned.splitlines()
         return "\n".join(lines[-tail_lines:])
-    return result.stdout
+    return cleaned
 
 
 def _wait_for_cli_ready(
@@ -123,9 +137,11 @@ def _is_block_alive(block_id: str) -> bool:
     """Check if a wsh block is still alive."""
     if not block_id:
         return False
-
+    wsh_bin = _find_wsh()
+    if not wsh_bin:
+        return False
     result = subprocess.run(
-        ["wsh", "blocks", "list", "--json"],
+        [wsh_bin, "blocks", "list", "--json"],
         capture_output=True,
         text=True,
         timeout=5.0,
@@ -170,6 +186,23 @@ def _looks_like_workspace_trust_prompt(command: list[str], pane_text: str) -> bo
     return False
 
 
+_WSH_SEARCH_PATHS = [
+    Path.home() / ".local/share/tideterm/bin/wsh",
+    Path.home() / ".local/state/waveterm/bin/wsh",
+]
+
+
+def _find_wsh() -> str | None:
+    """Find wsh executable via PATH or known locations."""
+    found = shutil.which("wsh")
+    if found:
+        return found
+    for p in _WSH_SEARCH_PATHS:
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return None
+
+
 class WshBackend(SpawnBackend):
     """Spawn agents in TideTerm/WaveTerminal blocks.
 
@@ -196,7 +229,8 @@ class WshBackend(SpawnBackend):
         skip_permissions: bool = False,
     ) -> str:
         """Spawn a new agent in a TideTerm block."""
-        if not shutil.which("wsh"):
+        wsh_bin = _find_wsh()
+        if not wsh_bin:
             return "Error: wsh not installed"
 
         # Validate cwd if provided
@@ -218,19 +252,26 @@ class WshBackend(SpawnBackend):
         )
         if cwd:
             env_vars["CLAWTEAM_WORKSPACE_DIR"] = cwd
+        if env:
+            env_vars.update(env)
+        env_vars["PATH"] = build_spawn_path(env_vars.get("PATH", os.environ.get("PATH")))
 
         prepared = self._adapter.prepare_command(
             command,
-            prompt=prompt,
+            prompt=None,
             cwd=cwd,
             skip_permissions=skip_permissions,
             agent_name=agent_name,
-            interactive=False,
+            interactive=True,
         )
         normalized_command = prepared.normalized_command
         validation_command = normalized_command
         final_command = list(prepared.final_command)
-        post_launch_prompt = prepared.post_launch_prompt
+        post_launch_prompt = None
+
+        # For wsh, pass prompt as claude's positional arg (interactive mode)
+        if prompt and is_claude_command(normalized_command):
+            final_command.append(prompt)
 
         command_error = validate_spawn_command(
             validation_command, path=env_vars.get("PATH", ""), cwd=cwd
@@ -245,13 +286,17 @@ class WshBackend(SpawnBackend):
             f"--agent {shlex.quote(agent_name)}"
         )
 
+        _SHELL_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+        export_vars = {k: v for k, v in env_vars.items() if _SHELL_ENV_KEY_RE.fullmatch(k)}
+        export_prefix = " ".join(f"export {k}={shlex.quote(v)}" for k, v in export_vars.items())
+
         if cwd:
-            full_cmd = f"cd {shlex.quote(cwd)} && {cmd_str}; {exit_hook}"
+            full_cmd = f"{export_prefix}; cd {shlex.quote(cwd)} && {cmd_str}; {exit_hook}"
         else:
-            full_cmd = f"{cmd_str}; {exit_hook}"
+            full_cmd = f"{export_prefix}; {cmd_str}; {exit_hook}"
 
         result = subprocess.run(
-            ["wsh", "run", "--cwd", cwd if cwd else ".", "--", "sh", "-c", full_cmd],
+            [wsh_bin, "run", "-c", full_cmd, "--cwd", cwd if cwd else "."],
             capture_output=True,
             text=True,
             timeout=30.0,
@@ -268,7 +313,7 @@ class WshBackend(SpawnBackend):
 
         subprocess.run(
             [
-                "wsh",
+                wsh_bin,
                 "setmeta",
                 "-b",
                 block_id,
@@ -296,25 +341,6 @@ class WshBackend(SpawnBackend):
                 f"within {cfg.spawn_ready_timeout:.1f}s. Verify CLI works standalone before "
                 "using it with clawteam spawn."
             )
-
-        if post_launch_prompt:
-            _wait_for_cli_ready(
-                block_id,
-                normalized_command,
-                timeout_seconds=cfg.spawn_ready_timeout,
-            )
-            if self._rpc_client is None:
-                self._rpc_client = WshRpcClient()
-            self._rpc_client.send_input(block_id, post_launch_prompt)
-        elif prompt and not is_codex_command(normalized_command):
-            _wait_for_cli_ready(
-                block_id,
-                normalized_command,
-                timeout_seconds=cfg.spawn_ready_timeout,
-            )
-            if self._rpc_client is None:
-                self._rpc_client = WshRpcClient()
-            self._rpc_client.send_input(block_id, prompt)
 
         pane_pid = 0
         from clawteam.spawn.registry import register_agent

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 from pathlib import Path
@@ -9,9 +10,25 @@ from pathlib import Path
 from clawteam.spawn.base import SpawnBackend
 
 
+def _find_wsh() -> str | None:
+    """Find wsh executable via PATH or known locations."""
+    found = shutil.which("wsh")
+    if found:
+        return found
+    for p in [
+        Path.home() / ".local/share/tideterm/bin/wsh",
+        Path.home() / ".local/state/waveterm/bin/wsh",
+    ]:
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return None
+
+
 def _wsh_is_connected() -> bool:
     """Check if TideTerm server is reachable."""
     socket_path = Path.home() / ".local/share/tideterm/tideterm.sock"
+    if not socket_path.exists():
+        socket_path = Path.home() / ".local/state/waveterm/tideterm.sock"
     if not socket_path.exists():
         return False
     try:
@@ -38,7 +55,7 @@ def get_backend(name: str = "auto") -> SpawnBackend:
         ValueError: If backend name is unknown.
     """
     if name == "auto":
-        if shutil.which("wsh") and _wsh_is_connected():
+        if _find_wsh() and _wsh_is_connected():
             from clawteam.spawn.wsh_backend import WshBackend
 
             return WshBackend()

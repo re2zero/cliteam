@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -174,8 +175,20 @@ def _wsh_block_alive(block_id: str) -> bool:
     if not block_id:
         return False
 
+    wsh_bin = shutil.which("wsh")
+    if not wsh_bin:
+        for p in [
+            Path.home() / ".local/share/tideterm/bin/wsh",
+            Path.home() / ".local/state/waveterm/bin/wsh",
+        ]:
+            if p.is_file() and os.access(p, os.X_OK):
+                wsh_bin = str(p)
+                break
+    if not wsh_bin:
+        return False
+
     result = subprocess.run(
-        ["wsh", "blocks", "list", "--json"],
+        [wsh_bin, "blocks", "list", "--json"],
         capture_output=True,
         text=True,
         timeout=5.0,

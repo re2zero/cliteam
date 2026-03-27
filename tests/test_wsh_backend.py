@@ -7,13 +7,9 @@ import pytest
 from clawteam.spawn.wsh_backend import WshBackend
 
 
-def test_wsh_not_available():
+def test_wsh_not_available(monkeypatch):
     """Test spawn fails gracefully without wsh."""
-    import shutil
-
-    if shutil.which("wsh"):
-        pytest.skip("wsh is installed on this system")
-
+    monkeypatch.setattr("clawteam.spawn.wsh_backend._find_wsh", lambda: None)
     backend = WshBackend()
     result = backend.spawn(
         command=["echo", "test"],
@@ -22,7 +18,6 @@ def test_wsh_not_available():
         agent_type="general-purpose",
         team_name="test-team",
     )
-
     assert "not installed" in result.lower()
 
 
