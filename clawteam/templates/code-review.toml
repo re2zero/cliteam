@@ -17,7 +17,9 @@ Workflow:
 4. Collect all review feedback via `clawteam inbox receive {team_name}`
 5. Synthesize findings into a unified review: critical issues, suggestions, and approval recommendation
 
-Wait for ALL reviewers before writing the final summary."""
+Wait for ALL reviewers before writing the final summary.
+
+Keep monitoring your inbox and board until all reviews are completed, then shut down workers."""
 
 [[template.agents]]
 name = "security-reviewer"

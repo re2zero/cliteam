@@ -23,7 +23,9 @@ Workflow:
    - execution sequence
    - next steps
 
-You must not finalize the recommendation until the decision-editor has delivered the memo."""
+You must not finalize the recommendation until the decision-editor has delivered the memo.
+
+Keep monitoring your inbox and board until the final recommendation is produced, then shut down workers."""
 
 [[template.agents]]
 name = "systems-analyst"

@@ -25,7 +25,9 @@ Workflow:
 4. Review and integrate completed work
 5. Report final status to user
 
-Use `clawteam inbox receive {team_name}` to get updates from team members."""
+Use `clawteam inbox receive {team_name}` to get updates from team members.
+
+Keep monitoring your inbox and board until all tasks are completed, then shut down workers."""
 
 [[template.agents]]
 name = "backend-dev"

@@ -227,6 +227,7 @@ class WshBackend(SpawnBackend):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         skip_permissions: bool = False,
+        system_prompt: str | None = None,
     ) -> str:
         """Spawn a new agent in a TideTerm block."""
         wsh_bin = _find_wsh()
@@ -273,6 +274,13 @@ class WshBackend(SpawnBackend):
         if prompt and is_claude_command(normalized_command):
             final_command.append(prompt)
 
+        if system_prompt and is_claude_command(normalized_command):
+            if "-p" in final_command:
+                insert_at = final_command.index("-p") + 2
+            else:
+                insert_at = 1
+            final_command[insert_at:insert_at] = ["--append-system-prompt", system_prompt]
+
         command_error = validate_spawn_command(
             validation_command, path=env_vars.get("PATH", ""), cwd=cwd
         )
@@ -311,6 +319,23 @@ class WshBackend(SpawnBackend):
 
         block_id = match.group(1)
 
+        self._blocks[agent_name] = block_id
+
+        from clawteam.config import load_config
+
+        cfg = load_config()
+
+        if not _wait_for_wsh_block(
+            block_id,
+            timeout_seconds=cfg.spawn_ready_timeout,
+            poll_interval_seconds=0.5,
+        ):
+            return (
+                f"Error: wsh block for '{normalized_command[0]}' did not become visible "
+                f"within {cfg.spawn_ready_timeout:.1f}s. Verify CLI works standalone before "
+                "using it with clawteam spawn."
+            )
+
         subprocess.run(
             [
                 wsh_bin,
@@ -323,24 +348,6 @@ class WshBackend(SpawnBackend):
             ],
             capture_output=True,
         )
-
-        self._blocks[agent_name] = block_id
-
-        from clawteam.config import load_config
-
-        cfg = load_config()
-
-        # Fixed: condition was inverted - _wait_for_wsh_block returns True on success
-        if not _wait_for_wsh_block(
-            block_id,
-            timeout_seconds=cfg.spawn_ready_timeout,
-            poll_interval_seconds=0.5,
-        ):
-            return (
-                f"Error: wsh block for '{normalized_command[0]}' did not become visible "
-                f"within {cfg.spawn_ready_timeout:.1f}s. Verify CLI works standalone before "
-                "using it with clawteam spawn."
-            )
 
         pane_pid = 0
         from clawteam.spawn.registry import register_agent
