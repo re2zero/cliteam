@@ -2932,11 +2932,12 @@ def lifecycle_on_exit(
     team: str = typer.Option(..., "--team", "-t", help="Team name"),
     agent: str = typer.Option(..., "--agent", "-n", help="Agent name"),
 ):
-    """Handle agent process exit: clean up session and reset in_progress tasks.
+    """Handle agent process exit: clean up session, reset tasks, close block.
 
     This is called automatically as a post-exit hook when an agent process terminates.
     """
     from clawteam.spawn.sessions import SessionStore
+    from clawteam.spawn.registry import stop_agent
     from clawteam.team.mailbox import MailboxManager
     from clawteam.team.manager import TeamManager
     from clawteam.team.models import TaskStatus
@@ -2953,36 +2954,35 @@ def lifecycle_on_exit(
     # Find this agent's in_progress tasks and reset them
     abandoned = [t for t in tasks if t.owner == agent and t.status == TaskStatus.in_progress]
 
-    if not abandoned:
-        return
+    if abandoned:
+        for t in abandoned:
+            store.update(t.id, status=TaskStatus.pending)
 
-    for t in abandoned:
-        store.update(t.id, status=TaskStatus.pending)
+        # Notify leader
+        leader_name = TeamManager.get_leader_name(team)
+        if leader_name:
+            mailbox = MailboxManager(team)
+            task_subjects = ", ".join(t.subject for t in abandoned)
+            mailbox.send(
+                from_agent=agent,
+                to=leader_name,
+                content=f"Agent '{agent}' exited unexpectedly. "
+                f"Reset {len(abandoned)} task(s) to pending: {task_subjects}",
+            )
 
-    # Notify leader
-    leader_name = TeamManager.get_leader_name(team)
-    if leader_name:
-        mailbox = MailboxManager(team)
-        task_subjects = ", ".join(t.subject for t in abandoned)
-        mailbox.send(
-            from_agent=agent,
-            to=leader_name,
-            content=f"Agent '{agent}' exited unexpectedly. "
-            f"Reset {len(abandoned)} task(s) to pending: {task_subjects}",
+        _output(
+            {
+                "status": "agent_exited",
+                "agent": agent,
+                "abandoned_tasks": [{"id": t.id, "subject": t.subject} for t in abandoned],
+            },
+            lambda d: console.print(
+                f"[yellow]Agent '{agent}' exited.[/yellow] "
+                f"Reset {len(d['abandoned_tasks'])} task(s) to pending."
+            ),
         )
 
-    _output(
-        {
-            "status": "agent_exited",
-            "agent": agent,
-            "abandoned_tasks": [{"id": t.id, "subject": t.subject} for t in abandoned],
-        },
-        lambda d: console.print(
-            f"[yellow]Agent '{agent}' exited.[/yellow] "
-            f"Reset {len(d['abandoned_tasks'])} task(s) to pending."
-        ),
-    )
-
+    stop_agent(team, agent)
 
 @lifecycle_app.command("check-zombies")
 def lifecycle_check_zombies(

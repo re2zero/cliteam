@@ -19,7 +19,9 @@ Workflow:
    methodology, results, discussion, conclusion
 6. Ensure proper citations and consistent writing style throughout
 
-Wait for ALL members before writing the final synthesis."""
+Wait for ALL members before writing the final synthesis.
+
+Keep monitoring your inbox and board until all sections are delivered, then shut down workers."""
 
 [[template.agents]]
 name = "literature-surveyor"

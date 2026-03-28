@@ -18,7 +18,9 @@ Workflow:
 5. Make final investment decisions based on all analyst signals + risk assessment
 6. Output a final report with: ticker, action (buy/sell/hold), quantity, confidence, reasoning
 
-You must wait for ALL analysts to report before making decisions."""
+You must wait for ALL analysts to report before making decisions.
+
+Keep monitoring your inbox and board until all reports are received and the final portfolio is output, then shut down workers."""
 
 [[template.agents]]
 name = "buffett-analyst"
