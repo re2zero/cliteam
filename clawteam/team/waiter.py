@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
+import subprocess
 import threading as _threading
 import time
 from dataclasses import dataclass, field
@@ -13,6 +15,8 @@ from typing import Callable
 from clawteam.team.mailbox import MailboxManager
 from clawteam.team.models import TaskItem, TaskStatus, TeamMessage
 from clawteam.team.tasks import TaskStore
+
+_PROMPT_RE = re.compile(r"[❯›>$#]\s*$")
 
 
 @dataclass
@@ -70,6 +74,8 @@ class TaskWaiter:
         self._idle_counts: dict[str, int] = {}
         self._respawned_agents: set[str] = set()
         self._observe_only = observe_only
+        self._nudged_agents: set[str] = set()
+        self._nudge_log: dict[str, list[float]] = {}
 
     def wait(self) -> WaitResult:
         """Block until all tasks are completed, timeout, or interrupted."""
@@ -236,6 +242,7 @@ class TaskWaiter:
 
         cfg = load_config()
         idle_threshold = max(1, int(cfg.idle_timeout / self.poll_interval))
+        nudge_threshold = max(1, int(cfg.nudge_delay / self.poll_interval))
         registry = get_registry(self.team_name)
 
         for agent_name, info in registry.items():
@@ -262,7 +269,13 @@ class TaskWaiter:
                 self._idle_counts[agent_name] = 0
             self._output_hashes[agent_name] = content_hash
 
-            if self._idle_counts.get(agent_name, 0) >= idle_threshold:
+            idle_count = self._idle_counts.get(agent_name, 0)
+
+            if cfg.nudge_enabled and idle_count >= nudge_threshold and idle_count < idle_threshold:
+                if self._try_nudge_agent(agent_name, info, content, cfg):
+                    continue
+
+            if idle_count >= idle_threshold:
                 self._respawn_idle_worker(agent_name, info, cfg)
 
     def _capture_wsh_output(self, block_id: str) -> str | None:
@@ -292,6 +305,85 @@ class TaskWaiter:
             return result.stdout
         except Exception:
             return None
+
+    def _try_nudge_agent(
+        self,
+        agent_name: str,
+        spawn_info: dict,
+        content: str,
+        cfg,
+    ) -> bool:
+        if agent_name in self._nudged_agents:
+            return False
+
+        if not self._is_at_prompt(content):
+            return False
+
+        if not self._has_pending_messages(agent_name):
+            return False
+
+        if not self._inject_nudge(agent_name, spawn_info):
+            return False
+
+        self._nudged_agents.add(agent_name)
+        logging.info(
+            "Nudge: sent reminder to '%s' (idle %.0fs, pending inbox messages)",
+            agent_name,
+            cfg.nudge_delay,
+        )
+        return True
+
+    @staticmethod
+    def _is_at_prompt(content: str) -> bool:
+        lines = content.strip().splitlines()
+        if not lines:
+            return False
+        last_line = lines[-1].strip()
+        return bool(_PROMPT_RE.match(last_line))
+
+    def _has_pending_messages(self, agent_name: str) -> bool:
+        try:
+            return self.mailbox.peek_count(agent_name) > 0
+        except Exception:
+            return False
+
+    def _inject_nudge(self, agent_name: str, spawn_info: dict) -> bool:
+        import shlex
+
+        backend = spawn_info.get("backend", "")
+        nudge_cmd = (
+            f"clawteam inbox receive {shlex.quote(self.team_name)} "
+            f"--agent {shlex.quote(agent_name)}"
+        )
+        if backend == "wsh":
+            return self._nudge_via_wsh(spawn_info.get("block_id", ""), nudge_cmd)
+        if backend == "tmux":
+            return self._nudge_via_tmux(spawn_info.get("tmux_target", ""), nudge_cmd)
+        return False
+
+    @staticmethod
+    def _nudge_via_wsh(block_id: str, command: str) -> bool:
+        try:
+            from clawteam.spawn.wsh_rpc import WshRpcClient
+
+            return WshRpcClient().send_input(block_id, command + "\n")
+        except Exception as exc:
+            logging.warning("Nudge: failed to send to wsh block %s: %s", block_id, exc)
+            return False
+
+    @staticmethod
+    def _nudge_via_tmux(target: str, command: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["tmux", "send-keys", "-t", target, command, "Enter"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5.0,
+            )
+            return result.returncode == 0
+        except Exception as exc:
+            logging.warning("Nudge: failed to send to tmux target %s: %s", target, exc)
+            return False
 
     def _respawn_idle_worker(self, agent_name: str, spawn_info: dict, cfg) -> None:
         from clawteam.spawn.registry import stop_agent
@@ -370,6 +462,7 @@ class TaskWaiter:
             logging.warning("Watchdog: failed to respawn '%s': %s", agent_name, exc)
         finally:
             self._respawned_agents.discard(agent_name)
+            self._nudged_agents.discard(agent_name)
             self._output_hashes.pop(agent_name, None)
             self._idle_counts.pop(agent_name, None)
 

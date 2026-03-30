@@ -56,6 +56,8 @@ class ClawTeamConfig(BaseModel):
     spawn_prompt_delay: float = 2.0  # fallback wait (seconds) if TUI ready-detection times out
     spawn_ready_timeout: float = 30.0  # max seconds to poll for TUI readiness before fallback
     idle_timeout: float = 60.0  # seconds of no output before considering worker idle
+    nudge_enabled: bool = True  # send terminal nudge to idle workers before respawn
+    nudge_delay: float = 10.0  # seconds of stable output before nudge (must be < idle_timeout)
 
 
 def config_path() -> Path:
@@ -102,6 +104,8 @@ def get_effective(key: str) -> tuple[str, str]:
         "spawn_prompt_delay": "CLAWTEAM_SPAWN_PROMPT_DELAY",
         "spawn_ready_timeout": "CLAWTEAM_SPAWN_READY_TIMEOUT",
         "idle_timeout": "CLAWTEAM_IDLE_TIMEOUT",
+        "nudge_enabled": "CLAWTEAM_NUDGE_ENABLED",
+        "nudge_delay": "CLAWTEAM_NUDGE_DELAY",
     }
     defaults = ClawTeamConfig()
     cfg = load_config()

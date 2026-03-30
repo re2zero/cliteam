@@ -243,3 +243,208 @@ def test_idle_detection_uses_tmux_backend(team_name):
     assert "alice" not in waiter._output_hashes
     assert "alice" not in waiter._idle_counts
     assert "alice" not in waiter._respawned_agents
+
+
+# --- Nudge tests ---
+
+
+def test_nudge_skipped_when_no_pending_messages(team_name):
+    waiter = _make_waiter(team_name, poll_interval=5.0)
+    waiter._output_hashes["alice"] = hash("❯\nsome output")
+    waiter._idle_counts["alice"] = 2
+
+    cfg = MagicMock(idle_timeout=60.0, nudge_enabled=True, nudge_delay=10.0)
+
+    with (
+        patch("clawteam.config.load_config", return_value=cfg),
+        patch("clawteam.spawn.registry.get_registry") as mock_reg,
+        patch.object(waiter, "_capture_wsh_output", return_value="❯\nsome output"),
+        patch.object(waiter, "_nudge_via_wsh") as mock_nudge,
+        patch.object(waiter, "mailbox", spec=MailboxManager) as mock_mailbox,
+    ):
+        mock_mailbox.peek_count.return_value = 0
+        mock_reg.return_value = {
+            "alice": {"backend": "wsh", "block_id": "block-1", "command": ["claude"]},
+        }
+        waiter._check_idle_agents()
+
+    mock_nudge.assert_not_called()
+
+
+def test_nudge_sent_when_idle_with_pending_messages(team_name):
+    waiter = _make_waiter(team_name, poll_interval=5.0)
+    content = "some output\n❯"
+    waiter._output_hashes["alice"] = hash(content)
+    waiter._idle_counts["alice"] = 2
+
+    cfg = MagicMock(idle_timeout=60.0, nudge_enabled=True, nudge_delay=10.0)
+
+    with (
+        patch("clawteam.config.load_config", return_value=cfg),
+        patch("clawteam.spawn.registry.get_registry") as mock_reg,
+        patch.object(waiter, "_capture_wsh_output", return_value=content),
+        patch.object(waiter, "_nudge_via_wsh", return_value=True) as mock_nudge,
+        patch.object(waiter, "_respawn_idle_worker") as mock_respawn,
+        patch.object(waiter.mailbox, "peek_count", return_value=2),
+    ):
+        mock_reg.return_value = {
+            "alice": {"backend": "wsh", "block_id": "block-1", "command": ["claude"]},
+        }
+        waiter._check_idle_agents()
+
+    mock_nudge.assert_called_once()
+    assert "alice" in waiter._nudged_agents
+    mock_respawn.assert_not_called()
+
+
+def test_nudge_skipped_when_not_at_prompt(team_name):
+    waiter = _make_waiter(team_name, poll_interval=5.0)
+    content = "running tool call...\nprocessing..."
+    waiter._output_hashes["alice"] = hash(content)
+    waiter._idle_counts["alice"] = 2
+
+    cfg = MagicMock(idle_timeout=60.0, nudge_enabled=True, nudge_delay=10.0)
+
+    with (
+        patch("clawteam.config.load_config", return_value=cfg),
+        patch("clawteam.spawn.registry.get_registry") as mock_reg,
+        patch.object(waiter, "_capture_wsh_output", return_value=content),
+        patch.object(waiter, "_nudge_via_wsh") as mock_nudge,
+        patch.object(waiter.mailbox, "peek_count", return_value=2),
+    ):
+        mock_reg.return_value = {
+            "alice": {"backend": "wsh", "block_id": "block-1", "command": ["claude"]},
+        }
+        waiter._check_idle_agents()
+
+    mock_nudge.assert_not_called()
+
+
+def test_nudge_only_sent_once_per_idle_period(team_name):
+    waiter = _make_waiter(team_name, poll_interval=5.0)
+    content = "output\n❯"
+    waiter._output_hashes["alice"] = hash(content)
+    waiter._idle_counts["alice"] = 2
+    waiter._nudged_agents.add("alice")
+
+    cfg = MagicMock(idle_timeout=60.0, nudge_enabled=True, nudge_delay=10.0)
+
+    with (
+        patch("clawteam.config.load_config", return_value=cfg),
+        patch("clawteam.spawn.registry.get_registry") as mock_reg,
+        patch.object(waiter, "_capture_wsh_output", return_value=content),
+        patch.object(waiter, "_nudge_via_wsh") as mock_nudge,
+        patch.object(waiter.mailbox, "peek_count", return_value=2),
+    ):
+        mock_reg.return_value = {
+            "alice": {"backend": "wsh", "block_id": "block-1", "command": ["claude"]},
+        }
+        waiter._check_idle_agents()
+
+    mock_nudge.assert_not_called()
+
+
+def test_nudge_disabled_via_config(team_name):
+    waiter = _make_waiter(team_name, poll_interval=5.0)
+    content = "output\n❯"
+    waiter._output_hashes["alice"] = hash(content)
+    waiter._idle_counts["alice"] = 2
+
+    cfg = MagicMock(idle_timeout=60.0, nudge_enabled=False, nudge_delay=10.0)
+
+    with (
+        patch("clawteam.config.load_config", return_value=cfg),
+        patch("clawteam.spawn.registry.get_registry") as mock_reg,
+        patch.object(waiter, "_capture_wsh_output", return_value=content),
+        patch.object(waiter, "_nudge_via_wsh") as mock_nudge,
+        patch.object(waiter, "_respawn_idle_worker") as mock_respawn,
+        patch.object(waiter.mailbox, "peek_count", return_value=2),
+    ):
+        mock_reg.return_value = {
+            "alice": {"backend": "wsh", "block_id": "block-1", "command": ["claude"]},
+        }
+        waiter._check_idle_agents()
+
+    mock_nudge.assert_not_called()
+    mock_respawn.assert_not_called()
+
+
+def test_nudge_still_respawns_after_threshold(team_name):
+    waiter = _make_waiter(team_name, poll_interval=5.0)
+    content = "output\n❯"
+    waiter._output_hashes["alice"] = hash(content)
+    waiter._nudged_agents.add("alice")
+    waiter._idle_counts["alice"] = 12
+
+    cfg = MagicMock(idle_timeout=60.0, nudge_enabled=True, nudge_delay=10.0)
+
+    with (
+        patch("clawteam.config.load_config", return_value=cfg),
+        patch("clawteam.spawn.registry.get_registry") as mock_reg,
+        patch.object(waiter, "_capture_wsh_output", return_value=content),
+        patch.object(waiter, "_nudge_via_wsh") as mock_nudge,
+        patch.object(waiter, "_respawn_idle_worker") as mock_respawn,
+        patch.object(waiter.mailbox, "peek_count", return_value=2),
+    ):
+        mock_reg.return_value = {
+            "alice": {"backend": "wsh", "block_id": "block-1", "command": ["claude"]},
+        }
+        waiter._check_idle_agents()
+
+    mock_nudge.assert_not_called()
+    mock_respawn.assert_called_once()
+
+
+def test_is_at_prompt_various_formats():
+    assert TaskWaiter._is_at_prompt("some output\n❯") is True
+    assert TaskWaiter._is_at_prompt("output\n›") is True
+    assert TaskWaiter._is_at_prompt("output\n>") is True
+    assert TaskWaiter._is_at_prompt("output\n$") is True
+    assert TaskWaiter._is_at_prompt("output\n#") is True
+    assert TaskWaiter._is_at_prompt("output\n❯ ") is True
+    assert TaskWaiter._is_at_prompt("running...\nprocessing...") is False
+    assert TaskWaiter._is_at_prompt("") is False
+    assert TaskWaiter._is_at_prompt("❯ some command here") is False
+
+
+def test_nudge_via_tmux_calls_send_keys(team_name):
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        result = TaskWaiter._nudge_via_tmux("sess:win", "clawteam inbox receive test --agent alice")
+
+    assert result is True
+    mock_run.assert_called_once()
+    args = mock_run.call_args[0][0]
+    assert args[0] == "tmux"
+    assert "send-keys" in args
+    assert "clawteam inbox receive" in " ".join(args)
+
+
+def test_nudge_via_tmux_returns_false_on_failure(team_name):
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1)
+        result = TaskWaiter._nudge_via_tmux("sess:win", "cmd")
+
+    assert result is False
+
+
+def test_nudge_resets_on_respawn(team_name):
+    waiter = _make_waiter(team_name)
+    waiter._nudged_agents.add("alice")
+    spawn_info = {"backend": "wsh", "block_id": "block-1", "command": ["claude"]}
+    waiter.task_store.create(subject="Next task", owner="alice")
+    waiter._output_hashes["alice"] = "old_hash"
+    waiter._idle_counts["alice"] = 20
+
+    cfg = MagicMock(idle_timeout=60.0)
+
+    with (
+        patch("clawteam.spawn.registry.stop_agent", return_value=True),
+        patch("clawteam.spawn.get_backend") as mock_get_backend,
+        patch("clawteam.team.manager.TeamManager.get_leader_name", return_value="leader"),
+        patch.object(waiter.mailbox, "send"),
+    ):
+        mock_get_backend.return_value = MagicMock()
+        waiter._respawn_idle_worker("alice", spawn_info, cfg)
+
+    assert "alice" not in waiter._nudged_agents
