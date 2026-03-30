@@ -304,7 +304,7 @@ class WshBackend(SpawnBackend):
             full_cmd = f"{export_prefix}; {cmd_str}; {exit_hook}"
 
         result = subprocess.run(
-            [wsh_bin, "run", "-c", full_cmd, "--cwd", cwd if cwd else "."],
+            [wsh_bin, "run", "-X", "-c", full_cmd, "--cwd", cwd if cwd else "."],
             capture_output=True,
             text=True,
             timeout=30.0,
