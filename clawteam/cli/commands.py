@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -2827,21 +2828,75 @@ def lifecycle_request_shutdown(
     from_agent: str = typer.Argument(..., help="Requesting agent name"),
     to_agent: str = typer.Argument(..., help="Target agent name"),
     reason: str = typer.Option("", "--reason", "-r", help="Shutdown reason"),
+    force: bool = typer.Option(
+        False, "--force", help="Force-stop the agent instead of sending a message"
+    ),
 ):
-    """Request an agent to shut down (requestShutdown)."""
-    from clawteam.team.lifecycle import LifecycleManager
+    """Request an agent to shut down (requestShutdown).
+
+    Without --force: sends a shutdown_request message to the agent's inbox.
+    The agent must cooperate (approve + exit) for shutdown to take effect.
+
+    With --force: directly terminates the agent's backing process
+    (wsh deleteblock / tmux kill-window / SIGTERM) and runs on-exit cleanup.
+    """
+    from clawteam.spawn.registry import stop_agent
+    from clawteam.spawn.sessions import SessionStore
     from clawteam.team.mailbox import MailboxManager
+    from clawteam.team.manager import TeamManager
+    from clawteam.team.models import TaskStatus
+    from clawteam.team.tasks import TaskStore
 
-    mailbox = MailboxManager(team)
-    lm = LifecycleManager(team, mailbox)
-    request_id = lm.request_shutdown(from_agent=from_agent, to_agent=to_agent, reason=reason)
+    if force:
+        SessionStore(team).clear(to_agent)
 
-    _output(
-        {"status": "requested", "requestId": request_id, "from": from_agent, "to": to_agent},
-        lambda d: console.print(
-            f"[green]OK[/green] Shutdown request sent to '{to_agent}' (id: {request_id})"
-        ),
-    )
+        store = TaskStore(team)
+        tasks = store.list_tasks()
+        abandoned = [t for t in tasks if t.owner == to_agent and t.status == TaskStatus.in_progress]
+
+        if abandoned:
+            for t in abandoned:
+                store.update(t.id, status=TaskStatus.pending)
+            leader_name = TeamManager.get_leader_name(team)
+            if leader_name and leader_name != to_agent:
+                mailbox = MailboxManager(team)
+                task_subjects = ", ".join(t.subject for t in abandoned)
+                mailbox.send(
+                    from_agent=to_agent,
+                    to=leader_name,
+                    content=f"Agent '{to_agent}' was force-stopped. "
+                    f"Reset {len(abandoned)} task(s) to pending: {task_subjects}",
+                )
+
+        result = stop_agent(team, to_agent)
+
+        if result is True:
+            _output(
+                {"status": "force-stopped", "agent": to_agent, "abandoned_tasks": len(abandoned)},
+                lambda d: console.print(
+                    f"[green]OK[/green] Agent '{to_agent}' force-stopped."
+                    + (f" Reset {d['abandoned_tasks']} task(s)." if d["abandoned_tasks"] else "")
+                ),
+            )
+        elif result is False:
+            console.print(f"[red]Agent '{to_agent}' did not stop within timeout.[/red]")
+            raise typer.Exit(1)
+        else:
+            console.print(f"[yellow]No registry entry found for agent '{to_agent}'.[/yellow]")
+            raise typer.Exit(1)
+    else:
+        from clawteam.team.lifecycle import LifecycleManager
+
+        mailbox = MailboxManager(team)
+        lm = LifecycleManager(team, mailbox)
+        request_id = lm.request_shutdown(from_agent=from_agent, to_agent=to_agent, reason=reason)
+
+        _output(
+            {"status": "requested", "requestId": request_id, "from": from_agent, "to": to_agent},
+            lambda d: console.print(
+                f"[green]OK[/green] Shutdown request sent to '{to_agent}' (id: {request_id})"
+            ),
+        )
 
 
 @lifecycle_app.command("approve-shutdown")
@@ -4032,6 +4087,7 @@ def launch_team(
 ):
     """Launch a full agent team from a template with one command."""
     import os as _os
+    import threading as _threading
 
     from clawteam.config import get_effective
     from clawteam.spawn import get_backend
@@ -4204,6 +4260,58 @@ def launch_team(
         console.print(f"[bold]Inbox:[/bold]  clawteam inbox peek {t_name} --agent <name>")
 
     _output(out, _human)
+
+    # 10. Start background TaskWaiter for idle detection, dead agent recovery, and shutdown
+    def _run_background_waiter():
+        try:
+            from clawteam.team.mailbox import MailboxManager
+            from clawteam.team.tasks import TaskStore
+            from clawteam.team.waiter import TaskWaiter
+
+            mailbox = MailboxManager(t_name)
+            ts = TaskStore(t_name)
+
+            def _on_progress(completed, total, in_progress, pending, blocked):
+                console.print(
+                    f"[dim]  Progress: {completed}/{total} done, "
+                    f"{in_progress} active, {pending} pending, {blocked} blocked[/dim]"
+                )
+
+            def _on_agent_dead(agent_name, abandoned_tasks):
+                console.print(
+                    f"[yellow]  Agent '{agent_name}' died. "
+                    f"Reset {len(abandoned_tasks)} task(s) to pending.[/yellow]"
+                )
+
+            waiter = TaskWaiter(
+                team_name=t_name,
+                agent_name=tmpl.leader.name,
+                mailbox=mailbox,
+                task_store=ts,
+                poll_interval=5.0,
+                on_progress=_on_progress,
+                on_agent_dead=_on_agent_dead,
+                observe_only=True,
+            )
+            result = waiter.wait()
+            if result.status == "completed":
+                from clawteam.spawn.registry import stop_agent, get_registry
+
+                for agent_name in list(get_registry(t_name).keys()):
+                    stop_agent(t_name, agent_name)
+                console.print(
+                    f"\n[green bold]All {result.total} tasks completed "
+                    f"in {result.elapsed:.0f}s. All agents shut down.[/green bold]"
+                )
+            elif result.status == "timeout":
+                console.print(f"\n[yellow]Waiter timed out after {result.elapsed:.0f}s.[/yellow]")
+        except Exception as exc:
+            logging.warning("Background waiter error: %s", exc)
+
+    waiter_thread = _threading.Thread(
+        target=_run_background_waiter, daemon=False, name=f"waiter-{t_name}"
+    )
+    waiter_thread.start()
 
 
 if __name__ == "__main__":

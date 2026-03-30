@@ -108,7 +108,7 @@ def _leader_protocol(team_name: str, agent_name: str, leader_name: str) -> list[
         "- Respond to worker questions, blocked reports, or completion summaries.",
         "- Create new tasks or reassign work as needed based on progress.",
         "- When all tasks are done, shut down workers: "
-        f'`clawteam lifecycle request-shutdown {team_name} {agent_name} <worker> --reason "All done"`',
+        f'`clawteam lifecycle request-shutdown {team_name} {agent_name} <worker> --force --reason "All done"`',
         "- Keep monitoring inbox and board until all workers have shut down.",
         "",
     ]

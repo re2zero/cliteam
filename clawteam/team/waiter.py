@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import threading as _threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -51,6 +52,7 @@ class TaskWaiter:
         on_message: Callable[[TeamMessage], None] | None = None,
         on_progress: Callable[[int, int, int, int, int], None] | None = None,
         on_agent_dead: Callable[[str, list[TaskItem]], None] | None = None,
+        observe_only: bool = False,
     ):
         self.team_name = team_name
         self.agent_name = agent_name
@@ -67,27 +69,35 @@ class TaskWaiter:
         self._output_hashes: dict[str, str] = {}
         self._idle_counts: dict[str, int] = {}
         self._respawned_agents: set[str] = set()
+        self._observe_only = observe_only
 
     def wait(self) -> WaitResult:
         """Block until all tasks are completed, timeout, or interrupted."""
         self._running = True
         start = time.monotonic()
 
-        # Save and install signal handlers
-        prev_sigint = signal.getsignal(signal.SIGINT)
-        prev_sigterm = signal.getsignal(signal.SIGTERM)
+        # Save and install signal handlers (main thread only)
+        is_main = isinstance(_threading.current_thread(), _threading._MainThread)
+        prev_sigint = prev_sigterm = None
+        if is_main:
+            prev_sigint = signal.getsignal(signal.SIGINT)
+            prev_sigterm = signal.getsignal(signal.SIGTERM)
 
         def _handle_signal(signum, frame):
             self._running = False
 
-        signal.signal(signal.SIGINT, _handle_signal)
-        signal.signal(signal.SIGTERM, _handle_signal)
+        if is_main:
+            signal.signal(signal.SIGINT, _handle_signal)
+            signal.signal(signal.SIGTERM, _handle_signal)
 
         last_summary = ""
         try:
             while self._running:
-                # 1. Drain inbox messages
-                messages = self.mailbox.receive(self.agent_name, limit=50)
+                # 1. Read inbox messages (peek in observe mode to avoid consuming)
+                if self._observe_only:
+                    messages = self.mailbox.peek(self.agent_name)
+                else:
+                    messages = self.mailbox.receive(self.agent_name, limit=50)
                 for msg in messages:
                     self._messages_received += 1
                     if self.on_message:
@@ -116,8 +126,11 @@ class TaskWaiter:
 
                 # 5. All done?
                 if total > 0 and completed == total:
-                    # Final drain — catch messages that arrived after task completion
-                    for msg in self.mailbox.receive(self.agent_name, limit=50):
+                    if self._observe_only:
+                        final_msgs = self.mailbox.peek(self.agent_name)
+                    else:
+                        final_msgs = self.mailbox.receive(self.agent_name, limit=50)
+                    for msg in final_msgs:
                         self._messages_received += 1
                         if self.on_message:
                             self.on_message(msg)
@@ -133,6 +146,27 @@ class TaskWaiter:
                         messages_received=self._messages_received,
                         task_details=[_task_summary(t) for t in tasks],
                     )
+
+                # 5b. In observe mode: all workers dead, no in_progress → force complete
+                if self._observe_only and in_progress == 0:
+                    from clawteam.spawn.registry import list_dead_agents
+
+                    dead = list_dead_agents(self.team_name)
+                    worker_names = [n for n in dead if n != self.agent_name]
+                    all_workers = list({t.owner for t in tasks if t.owner != self.agent_name})
+                    if all_workers and all(w in self._known_dead for w in all_workers):
+                        elapsed = time.monotonic() - start
+                        return WaitResult(
+                            status="completed",
+                            elapsed=elapsed,
+                            total=total,
+                            completed=completed,
+                            in_progress=0,
+                            pending=pending,
+                            blocked=blocked,
+                            messages_received=self._messages_received,
+                            task_details=[_task_summary(t) for t in tasks],
+                        )
 
                 # 6. Timeout?
                 elapsed = time.monotonic() - start
@@ -168,9 +202,9 @@ class TaskWaiter:
                 task_details=[_task_summary(t) for t in tasks],
             )
         finally:
-            # Restore original signal handlers
-            signal.signal(signal.SIGINT, prev_sigint)
-            signal.signal(signal.SIGTERM, prev_sigterm)
+            if is_main and prev_sigint is not None:
+                signal.signal(signal.SIGINT, prev_sigint)
+                signal.signal(signal.SIGTERM, prev_sigterm)
 
     def _check_dead_agents(self) -> None:
         """Detect dead agents and mark their in_progress tasks as pending."""
@@ -261,6 +295,7 @@ class TaskWaiter:
 
     def _respawn_idle_worker(self, agent_name: str, spawn_info: dict, cfg) -> None:
         from clawteam.spawn.registry import stop_agent
+        from clawteam.team.manager import TeamManager
 
         stopped = stop_agent(self.team_name, agent_name)
         if stopped is not True:
@@ -274,6 +309,16 @@ class TaskWaiter:
                 break
 
         if next_task is None:
+            leader_name = TeamManager.get_leader_name(self.team_name) or "leader"
+            self.mailbox.send(
+                from_agent=self.agent_name,
+                to=leader_name,
+                content=(
+                    f"Worker '{agent_name}' was idle (no output for {cfg.idle_timeout:.0f}s) "
+                    f"and has no pending tasks. Shutting down."
+                ),
+            )
+            self._known_dead.add(agent_name)
             self._respawned_agents.discard(agent_name)
             return
 
