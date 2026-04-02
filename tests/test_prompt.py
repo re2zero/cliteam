@@ -34,8 +34,6 @@ class TestBuildAgentPrompt:
         assert "commit your changes" in prompt
         assert "git add -A && git commit" in prompt
         assert "clawteam inbox send" in prompt
-        assert "clawteam cost report" in prompt
-        assert "clawteam session save" in prompt
 
     def test_prompt_includes_user_when_provided(self):
         prompt = build_agent_prompt(
@@ -117,7 +115,6 @@ class TestBuildAgentPrompt:
         )
         assert "clawteam task list my-team --owner dev" in prompt
         assert "clawteam inbox send my-team boss" in prompt
-        assert "clawteam cost report my-team" in prompt
         assert "commit your changes in this repository with git" in prompt
 
     def test_prompt_includes_worker_loop_protocol(self):
@@ -130,6 +127,6 @@ class TestBuildAgentPrompt:
             task="task",
         )
         assert "Worker Loop Protocol" in prompt
-        assert "run `/exit` to close your session" in prompt
+        assert "shutdown_request" in prompt
         assert "clawteam inbox receive my-team --agent dev" in prompt
         assert "clawteam lifecycle idle my-team" in prompt
