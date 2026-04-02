@@ -21,6 +21,7 @@ else:
 # Pydantic models
 # ---------------------------------------------------------------------------
 
+
 class AgentDef(BaseModel):
     name: str
     type: str = "general-purpose"
@@ -50,6 +51,17 @@ class TemplateDef(BaseModel):
 
 _BUILTIN_DIR = Path(__file__).parent
 _USER_DIR = Path.home() / ".clawteam" / "templates"
+
+
+def ensure_user_templates() -> None:
+    _USER_DIR.mkdir(parents=True, exist_ok=True)
+    for src in _BUILTIN_DIR.glob("*.toml"):
+        dst = _USER_DIR / src.name
+        if not dst.is_file():
+            dst.write_bytes(src.read_bytes())
+
+
+ensure_user_templates()
 
 
 # ---------------------------------------------------------------------------

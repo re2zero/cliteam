@@ -91,6 +91,44 @@ deactivate
 
 echo ""
 
+_install_skills() {
+    local src_dir="${REPO_DIR}/skills"
+    local targets=(
+        "${HOME}/.config/opencode/skills"
+        "${HOME}/.claude/skills"
+    )
+
+    [ -d "${src_dir}" ] || { warn "No skills/ directory found, skipping."; return 0; }
+
+    local count=0
+    local skill_name
+    for skill_path in "${src_dir}"/*/; do
+        [ -d "${skill_path}" ] || continue
+        skill_name="$(basename "${skill_path}")"
+        for target in "${targets[@]}"; do
+            mkdir -p "${target}"
+            if [ -d "${target}/${skill_name}" ]; then
+                info "  ${skill_name} -> ${target}/ (already exists, skipping)"
+            else
+                cp -rL "${skill_path}" "${target}/${skill_name}"
+                info "  ${skill_name} -> ${target}/${skill_name}"
+            fi
+        done
+        count=$((count + 1))
+    done
+
+    if [ "${count}" -eq 0 ]; then
+        warn "skills/ directory is empty, nothing to install."
+    else
+        echo ""
+        info "Installed ${count} skill(s). Agents will auto-load them on next session."
+    fi
+}
+
+_install_skills
+
+echo ""
+
 if [ -f "${SYMLINK_FILE}" ]; then
     CLAWTEAM_VERSION=$("${VENV_DIR}/bin/python" -c "import clawteam; print(clawteam.__version__)" 2>/dev/null || echo "unknown")
     info "clawteam ${CLAWTEAM_VERSION} installed successfully!"

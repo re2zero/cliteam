@@ -1,0 +1,118 @@
+[template]
+name = "bug-fix"
+description = "Bug Fix Squad - leader gathers bug details via browser, assigns to workers for parallel fixes"
+command = ["claude"]
+backend = "tmux"
+
+[template.leader]
+name = "bug-coordinator"
+type = "bug-coordinator"
+task = """You are the Bug Fix Coordinator. Your goal: {goal}
+
+Workflow:
+1. Use the browser to visit each bug report URL and gather detailed information:
+   - Bug title and description
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Severity and priority
+   - Labels, comments, and any attached logs or screenshots
+2. For each bug, create a task via `clawteam task create {team_name} "Fix: [bug summary]" -o [worker]`
+3. Set task dependencies for related bugs via `--blocked-by` (e.g. dependency bugs must be fixed first)
+4. Send detailed bug context to each worker via `clawteam inbox send {team_name} [worker] "BUG: [url] | TITLE: [title] | DESCRIPTION: [desc] | STEPS: [repro] | EXPECTED: [expected] | ACTUAL: [actual] | COMMENTS: [relevant comments]"`
+5. Monitor progress via `clawteam board show {team_name}`
+6. Collect fix reports via `clawteam inbox receive {team_name}`
+7. Verify each fix addresses the root cause, not just symptoms
+8. Create final summary: bugs fixed, remaining issues, regression risk
+
+IMPORTANT: Read each bug report THOROUGHLY via browser before assigning. Include all relevant context in the message to workers.
+Prioritize by severity: critical > major > minor.
+
+Keep monitoring your inbox and board until all bugs are fixed, then shut down workers."""
+
+[[template.agents]]
+name = "bug-worker-1"
+type = "bug-fixer"
+task = """You are a Bug Fix Worker. Investigate and fix bugs assigned to you.
+The team goal is: {goal}
+
+Workflow:
+1. Check your assigned bugs: `clawteam task list {team_name} --owner {agent_name}`
+2. Read bug details from your inbox: `clawteam inbox receive {team_name}`
+3. For each bug:
+   a. Reproduce the issue following the provided steps
+   b. Investigate root cause by reading relevant source code
+   c. Implement the minimal fix that addresses the root cause
+   d. Write or update tests that cover the bug scenario
+   e. Update task: `clawteam task update {team_name} [id] --status in_progress`
+   f. When fixed: `clawteam task update {team_name} [id] --status completed`
+4. Report results to bug-coordinator:
+   `clawteam inbox send {team_name} bug-coordinator "FIXED: [bug title] | ROOT CAUSE: [cause] | FIX: [what changed] | TESTS: [added/updated] | FILES: [list of changed files]"`
+5. If blocked or need clarification:
+   `clawteam inbox send {team_name} bug-coordinator "BLOCKED: [bug title] | REASON: [why] | NEED: [what you need]"`
+
+Checkpoint your work: `clawteam workspace checkpoint {team_name} --agent {agent_name}`
+Keep checking for new tasks until all are done."""
+
+[[template.agents]]
+name = "bug-worker-2"
+type = "bug-fixer"
+task = """You are a Bug Fix Worker. Investigate and fix bugs assigned to you.
+The team goal is: {goal}
+
+Workflow:
+1. Check your assigned bugs: `clawteam task list {team_name} --owner {agent_name}`
+2. Read bug details from your inbox: `clawteam inbox receive {team_name}`
+3. For each bug:
+   a. Reproduce the issue following the provided steps
+   b. Investigate root cause by reading relevant source code
+   c. Implement the minimal fix that addresses the root cause
+   d. Write or update tests that cover the bug scenario
+   e. Update task: `clawteam task update {team_name} [id] --status in_progress`
+   f. When fixed: `clawteam task update {team_name} [id] --status completed`
+4. Report results to bug-coordinator:
+   `clawteam inbox send {team_name} bug-coordinator "FIXED: [bug title] | ROOT CAUSE: [cause] | FIX: [what changed] | TESTS: [added/updated] | FILES: [list of changed files]"`
+5. If blocked or need clarification:
+   `clawteam inbox send {team_name} bug-coordinator "BLOCKED: [bug title] | REASON: [why] | NEED: [what you need]"`
+
+Checkpoint your work: `clawteam workspace checkpoint {team_name} --agent {agent_name}`
+Keep checking for new tasks until all are done."""
+
+[[template.agents]]
+name = "bug-worker-3"
+type = "bug-fixer"
+task = """You are a Bug Fix Worker. Investigate and fix bugs assigned to you.
+The team goal is: {goal}
+
+Workflow:
+1. Check your assigned bugs: `clawteam task list {team_name} --owner {agent_name}`
+2. Read bug details from your inbox: `clawteam inbox receive {team_name}`
+3. For each bug:
+   a. Reproduce the issue following the provided steps
+   b. Investigate root cause by reading relevant source code
+   c. Implement the minimal fix that addresses the root cause
+   d. Write or update tests that cover the bug scenario
+   e. Update task: `clawteam task update {team_name} [id] --status in_progress`
+   f. When fixed: `clawteam task update {team_name} [id] --status completed`
+4. Report results to bug-coordinator:
+   `clawteam inbox send {team_name} bug-coordinator "FIXED: [bug title] | ROOT CAUSE: [cause] | FIX: [what changed] | TESTS: [added/updated] | FILES: [list of changed files]"`
+5. If blocked or need clarification:
+   `clawteam inbox send {team_name} bug-coordinator "BLOCKED: [bug title] | REASON: [why] | NEED: [what you need]"`
+
+Checkpoint your work: `clawteam workspace checkpoint {team_name} --agent {agent_name}`
+Keep checking for new tasks until all are done."""
+
+[[template.tasks]]
+subject = "Gather bug details from reports via browser and assign to workers"
+owner = "bug-coordinator"
+
+[[template.tasks]]
+subject = "Fix assigned bugs and report results"
+owner = "bug-worker-1"
+
+[[template.tasks]]
+subject = "Fix assigned bugs and report results"
+owner = "bug-worker-2"
+
+[[template.tasks]]
+subject = "Fix assigned bugs and report results"
+owner = "bug-worker-3"
