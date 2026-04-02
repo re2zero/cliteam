@@ -22,9 +22,15 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 RELEASE_VERSION="${1:-}"
 RELEASE_URL=""
+LOCAL_WHL=""
 
 if [ -n "${RELEASE_VERSION}" ]; then
-    RELEASE_URL="https://github.com/re2zero/cliteam/releases/download/${RELEASE_VERSION}/clawteam-${RELEASE_VERSION#v}-py3-none-any.whl"
+    if [ -f "${RELEASE_VERSION}" ]; then
+        LOCAL_WHL="$(cd "$(dirname "${RELEASE_VERSION}")" && pwd)/$(basename "${RELEASE_VERSION}")"
+        RELEASE_VERSION=""
+    else
+        RELEASE_URL="https://github.com/re2zero/cliteam/releases/download/${RELEASE_VERSION}/clawteam-${RELEASE_VERSION#v}-py3-none-any.whl"
+    fi
 fi
 
 echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
@@ -63,7 +69,10 @@ source "${VENV_DIR}/bin/activate"
 info "Upgrading pip ..."
 pip install --upgrade pip -q
 
-if [ -n "${RELEASE_URL}" ]; then
+if [ -n "${LOCAL_WHL}" ]; then
+    info "Installing clawteam from local file: ${LOCAL_WHL}"
+    pip install "${LOCAL_WHL}"
+elif [ -n "${RELEASE_URL}" ]; then
     info "Installing clawteam ${RELEASE_VERSION} from GitHub Release ..."
     pip install "${RELEASE_URL}"
 else
@@ -71,7 +80,7 @@ else
         info "Installing clawteam from source (${REPO_DIR}) ..."
         pip install -e "${REPO_DIR}"
     else
-        error "No pyproject.toml found. Run from repo root or specify version: ./install.sh v0.2.1"
+        error "Usage: ./install_clawteam.sh [v0.2.1 | /path/to/clawteam-0.2.1-py3-none-any.whl]"
     fi
 fi
 
@@ -79,6 +88,44 @@ ln -sf "${VENV_DIR}/bin/clawteam" "${SYMLINK_FILE}"
 ln -sf "${VENV_DIR}/bin/clawteam-mcp" "${MCP_SYMLINK}" 2>/dev/null || true
 
 deactivate
+
+echo ""
+
+_install_skills() {
+    local src_dir="${REPO_DIR}/skills"
+    local targets=(
+        "${HOME}/.config/opencode/skills"
+        "${HOME}/.claude/skills"
+    )
+
+    [ -d "${src_dir}" ] || { warn "No skills/ directory found, skipping."; return 0; }
+
+    local count=0
+    local skill_name
+    for skill_path in "${src_dir}"/*/; do
+        [ -d "${skill_path}" ] || continue
+        skill_name="$(basename "${skill_path}")"
+        for target in "${targets[@]}"; do
+            mkdir -p "${target}"
+            if [ -d "${target}/${skill_name}" ]; then
+                info "  ${skill_name} -> ${target}/ (already exists, skipping)"
+            else
+                cp -rL "${skill_path}" "${target}/${skill_name}"
+                info "  ${skill_name} -> ${target}/${skill_name}"
+            fi
+        done
+        count=$((count + 1))
+    done
+
+    if [ "${count}" -eq 0 ]; then
+        warn "skills/ directory is empty, nothing to install."
+    else
+        echo ""
+        info "Installed ${count} skill(s). Agents will auto-load them on next session."
+    fi
+}
+
+_install_skills
 
 echo ""
 
