@@ -20,6 +20,9 @@ from rich.table import Table
 from clawteam import __version__
 from clawteam.timefmt import format_timestamp
 
+# Import completion handler for post-completion automation
+from clawteam.team.completion import CompletionHandler
+
 app = typer.Typer(
     name="clawteam",
     help="Framework-agnostic multi-agent coordination CLI",
@@ -2439,7 +2442,6 @@ def task_wait(
     ),
 ):
     """Block until all tasks in a team are completed."""
-    from clawteam.team.completion import CompletionHandler
     from clawteam.team.mailbox import MailboxManager
     from clawteam.team.manager import TeamManager
     from clawteam.team.tasks import TaskStore
@@ -4267,7 +4269,6 @@ def launch_team(
     # 10. Start background TaskWaiter for idle detection, dead agent recovery, and shutdown
     def _run_background_waiter():
         try:
-            from clawteam.team.completion import CompletionHandler
             from clawteam.team.mailbox import MailboxManager
             from clawteam.team.tasks import TaskStore
             from clawteam.team.waiter import TaskWaiter

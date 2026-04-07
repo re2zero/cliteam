@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,17 +73,50 @@ class FeedbackStore:
         self.team_name = validate_identifier(team_name, "team name")
 
     @contextmanager
-    def _write_lock(self):
+    def _write_lock(self, timeout: float = 10.0):
+        """Acquire write lock with timeout.
+        
+        Args:
+            timeout: Maximum time to wait for lock acquisition in seconds
+            
+        Raises:
+            TimeoutError: If lock cannot be acquired within timeout
+        """
         lock_path = _feedbacks_lock_path(self.team_name)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        
         with lock_path.open("a+", encoding="utf-8") as lock_file:
             if sys.platform == "win32":
+                # Windows: Use locking with timeout via retry
+                start_time = time.time()
                 pos = lock_file.tell()
                 lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                
+                while time.time() - start_time < timeout:
+                    try:
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        # Lock is held by another process, wait and retry
+                        time.sleep(0.1)
+                else:
+                    raise TimeoutError(f"Could not acquire feedback store lock after {timeout} seconds")
+                
                 lock_file.seek(pos)
             else:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                # Unix: Use flock with timeout via retry
+                start_time = time.time()
+                
+                while time.time() - start_time < timeout:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except (IOError, OSError):
+                        # Lock is held by another process, wait and retry
+                        time.sleep(0.1)
+                else:
+                    raise TimeoutError(f"Could not acquire feedback store lock after {timeout} seconds")
+            
             try:
                 yield
             finally:

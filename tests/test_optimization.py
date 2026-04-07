@@ -301,5 +301,5 @@ enabled = true
                     # Should log error
                     assert logger_instance.error.called
                     error_calls = [str(call) for call in logger_instance.error.call_args_list]
-                    # Check for either the general error or the specific team changes error
-                    assert any("Error applying" in str(call) for call in error_calls)
+                    # Check for either the general error or the specific validation/applying error
+                    assert any("Error" in str(call) for call in error_calls)

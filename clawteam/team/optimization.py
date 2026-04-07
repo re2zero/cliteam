@@ -234,10 +234,27 @@ class OptimizationEngine:
                 logger.info(f"- {rec}")
             return False
 
-        # Auto-apply logic
-        success = True
-        
+        # Two-phase commit: validate first, then apply
         try:
+            # Phase 1: Validate all changes can be applied
+            logger.info(f"Validating optimization changes for {self.team_name}")
+            
+            # Validate team changes
+            if report.suggested_team_changes:
+                if not self._validate_team_changes(report.suggested_team_changes):
+                    logger.error(f"Team changes validation failed for {self.team_name}")
+                    return False
+            
+            # Validate template updates
+            if report.template_updates:
+                if not self._validate_template_updates(report.template_updates):
+                    logger.error(f"Template updates validation failed for {self.team_name}")
+                    return False
+            
+            # Phase 2: Apply all validated changes
+            logger.info(f"Applying validated optimization changes for {self.team_name}")
+            success = True
+            
             # Apply team configuration changes
             if report.suggested_team_changes:
                 team_success = self._apply_team_changes(report.suggested_team_changes)
@@ -266,6 +283,86 @@ class OptimizationEngine:
             
         except Exception as e:
             logger.error(f"Error applying optimizations for {self.team_name}: {e}")
+            return False
+    
+    def _validate_team_changes(self, team_changes: Dict[str, Any]) -> bool:
+        """Validate team configuration changes before applying.
+        
+        Args:
+            team_changes: Dictionary containing team change recommendations
+            
+        Returns:
+            True if changes are valid, False otherwise
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Check if team config exists
+            team_config = TeamManager.get_team(self.team_name)
+            if team_config is None:
+                logger.error(f"Team config not found for {self.team_name}")
+                return False
+            
+            # Validate team_size change
+            if "team_size" in team_changes:
+                size_change = team_changes["team_size"]
+                if size_change not in ["increase", "decrease", "keep"]:
+                    logger.error(f"Invalid team_size change: {size_change}")
+                    return False
+            
+            # Validate role_changes
+            if "role_changes" in team_changes:
+                role_changes = team_changes["role_changes"]
+                if not isinstance(role_changes, dict):
+                    logger.error(f"role_changes must be a dictionary")
+                    return False
+                
+                for role, action in role_changes.items():
+                    if action not in ["add", "remove", "keep"]:
+                        logger.error(f"Invalid role change action: {action} for role {role}")
+                        return False
+            
+            logger.info(f"Team changes validation passed for {self.team_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error validating team changes for {self.team_name}: {e}")
+            return False
+    
+    def _validate_template_updates(self, template_updates: Dict[str, Any]) -> bool:
+        """Validate template parameter updates before applying.
+        
+        Args:
+            template_updates: Dictionary containing template update recommendations
+            
+        Returns:
+            True if updates are valid, False otherwise
+        """
+        import logging
+        import sys
+        from pathlib import Path
+        
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # Check if template file exists
+            template_path = Path.home() / ".clawteam" / "templates" / "post-completion.toml"
+            if not template_path.exists():
+                logger.warning(f"Post-completion template not found at {template_path}")
+                return False
+            
+            # Validate update keys
+            valid_keys = ["review_threshold", "automated_checks", "code_review_focus"]
+            for key in template_updates.keys():
+                if key not in valid_keys:
+                    logger.warning(f"Unknown template update key: {key}")
+            
+            logger.info(f"Template updates validation passed for {self.team_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error validating template updates for {self.team_name}: {e}")
             return False
     
     def _apply_team_changes(self, team_changes: Dict[str, Any]) -> bool:

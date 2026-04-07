@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -10,6 +11,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from clawteam.fileutil import atomic_write_text
+
+logger = logging.getLogger(__name__)
 
 # TOML support: built-in on 3.11+, conditional dependency on 3.10
 if sys.version_info >= (3, 11):
@@ -229,8 +232,6 @@ def load_post_completion_config() -> PostCompletionSettings:
         )
     except Exception as e:
         # Log error and return defaults
-        import logging
-        logger = logging.getLogger(__name__)
         logger.warning(f"Failed to load post-completion config: {e}, using defaults")
         return PostCompletionSettings()
 
