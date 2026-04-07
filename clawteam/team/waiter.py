@@ -10,8 +10,9 @@ import subprocess
 import threading as _threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Awaitable, Callable, Coroutine
 
+from clawteam.team.completion import CompletionHandler
 from clawteam.team.mailbox import MailboxManager
 from clawteam.team.models import TaskItem, TaskStatus, TeamMessage
 from clawteam.team.tasks import TaskStore
@@ -57,6 +58,7 @@ class TaskWaiter:
         on_progress: Callable[[int, int, int, int, int], None] | None = None,
         on_agent_dead: Callable[[str, list[TaskItem]], None] | None = None,
         observe_only: bool = False,
+        completion_handler: CompletionHandler | None = None,
     ):
         self.team_name = team_name
         self.agent_name = agent_name
@@ -76,9 +78,16 @@ class TaskWaiter:
         self._observe_only = observe_only
         self._nudged_agents: set[str] = set()
         self._nudge_log: dict[str, list[float]] = {}
+        self.completion_handler = completion_handler
+        self._previously_completed: set[str] = set()
 
-    def wait(self) -> WaitResult:
-        """Block until all tasks are completed, timeout, or interrupted."""
+    def wait(self, completion_callback: Callable[[TaskItem, str], Coroutine[Any, Any, None]] | None = None) -> WaitResult:
+        """Block until all tasks are completed, timeout, or interrupted.
+
+        Args:
+            completion_callback: Optional coroutine callback to invoke when a task completes.
+                                 Receives the completed task and team name.
+        """
         self._running = True
         start = time.monotonic()
 
@@ -122,6 +131,20 @@ class TaskWaiter:
                 in_progress = sum(1 for t in tasks if t.status == TaskStatus.in_progress)
                 pending = sum(1 for t in tasks if t.status == TaskStatus.pending)
                 blocked = sum(1 for t in tasks if t.status == TaskStatus.blocked)
+
+                # Check for newly completed tasks and handle completion
+                current_completed = {t.id for t in tasks if t.status == TaskStatus.completed}
+                newly_completed = current_completed - self._previously_completed
+                if newly_completed:
+                    for task_id in newly_completed:
+                        task = next(t for t in tasks if t.id == task_id)
+                        # Run completion handler asynchronously to avoid blocking
+                        import asyncio
+                        if completion_callback:
+                            asyncio.create_task(completion_callback(task, self.team_name))
+                        elif self.completion_handler:
+                            asyncio.create_task(self.completion_handler.handle_completion(task, self.team_name))
+                self._previously_completed = current_completed
 
                 # Deduplicate progress output
                 summary = f"{completed}/{total}/{in_progress}/{pending}/{blocked}"

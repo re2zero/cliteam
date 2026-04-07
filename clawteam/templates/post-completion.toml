@@ -1,0 +1,24 @@
+[template]
+name = "post-completion"
+description = "Post-task completion automation configuration for review, feedback collection, and optimization"
+
+[post_completion]
+enabled = true
+
+[review]
+enabled = true
+team_template = "code-review"
+trigger_conditions = ["task_completed"]
+auto_launch = true
+
+[feedback]
+enabled = true
+collect_types = ["user_rating", "performance", "quality", "completion_time"]
+auto_collect = true
+store_backend = "file"
+
+[optimization]
+enabled = true
+analysis_interval_hours = 24
+optimization_mode = "auto"
+suggestions_enabled = true

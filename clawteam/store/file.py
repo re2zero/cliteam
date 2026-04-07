@@ -84,6 +84,11 @@ class FileTaskStore(BaseTaskStore):
         blocked_by: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TaskItem:
+        # Ensure metadata has code_paths field to prevent data flow issues
+        task_metadata = metadata or {}
+        if "code_paths" not in task_metadata:
+            task_metadata["code_paths"] = []
+        
         task = TaskItem(
             subject=subject,
             description=description,
@@ -91,7 +96,7 @@ class FileTaskStore(BaseTaskStore):
             priority=priority or TaskPriority.medium,
             blocks=blocks or [],
             blocked_by=blocked_by or [],
-            metadata=metadata or {},
+            metadata=task_metadata,
         )
         self._validate_blocked_by_unlocked(task.id, task.blocked_by)
         if task.blocked_by:

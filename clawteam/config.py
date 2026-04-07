@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from clawteam.fileutil import atomic_write_text
+
+# TOML support: built-in on 3.11+, conditional dependency on 3.10
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    try:
+        import tomllib  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
 
 
 class AgentProfile(BaseModel):
@@ -127,3 +137,171 @@ def get_effective(key: str) -> tuple[str, str]:
 def scalar_config_keys() -> list[str]:
     """Return user-facing scalar config keys (excluding nested structures)."""
     return [key for key in ClawTeamConfig.model_fields.keys() if key not in {"profiles", "presets"}]
+
+
+# ---------------------------------------------------------------------------
+# Post-completion configuration
+# ---------------------------------------------------------------------------
+
+
+class PostCompletionConfig(BaseModel):
+    """Configuration for post-completion automation."""
+
+    enabled: bool = True
+
+
+class ReviewConfig(BaseModel):
+    """Configuration for automated code review."""
+
+    enabled: bool = True
+    team_template: str = "code-review"
+    trigger_conditions: list[str] = Field(default_factory=lambda: ["task_completed"])
+    auto_launch: bool = True
+
+
+class FeedbackConfig(BaseModel):
+    """Configuration for feedback collection."""
+
+    enabled: bool = True
+    collect_types: list[str] = Field(default_factory=lambda: ["user_rating", "performance", "quality", "completion_time"])
+    auto_collect: bool = True
+    store_backend: str = "file"
+
+
+class OptimizationConfig(BaseModel):
+    """Configuration for optimization engine."""
+
+    enabled: bool = True
+    analysis_interval_hours: int = 24
+    optimization_mode: str = "auto"
+    suggestions_enabled: bool = True
+
+
+class PostCompletionSettings(BaseModel):
+    """Complete post-completion settings."""
+
+    post_completion: PostCompletionConfig = Field(default_factory=PostCompletionConfig)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
+    feedback: FeedbackConfig = Field(default_factory=FeedbackConfig)
+    optimization: OptimizationConfig = Field(default_factory=OptimizationConfig)
+
+
+def post_completion_config_path() -> Path:
+    """Get the path to the post-completion.toml configuration file."""
+    return Path.home() / ".clawteam" / "templates" / "post-completion.toml"
+
+
+def load_post_completion_config() -> PostCompletionSettings:
+    """Load post-completion configuration from TOML file.
+    
+    Returns default configuration if file doesn't exist or parsing fails.
+    """
+    config_path = post_completion_config_path()
+    
+    if not config_path.exists():
+        return PostCompletionSettings()
+    
+    try:
+        with open(config_path, "rb") as f:
+            raw = tomllib.load(f)
+        
+        # Parse post_completion section
+        post_completion_data = raw.get("post_completion", {})
+        post_completion = PostCompletionConfig(**post_completion_data)
+        
+        # Parse review section
+        review_data = raw.get("review", {})
+        review = ReviewConfig(**review_data)
+        
+        # Parse feedback section
+        feedback_data = raw.get("feedback", {})
+        feedback = FeedbackConfig(**feedback_data)
+        
+        # Parse optimization section
+        optimization_data = raw.get("optimization", {})
+        optimization = OptimizationConfig(**optimization_data)
+        
+        return PostCompletionSettings(
+            post_completion=post_completion,
+            review=review,
+            feedback=feedback,
+            optimization=optimization,
+        )
+    except Exception as e:
+        # Log error and return defaults
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to load post-completion config: {e}, using defaults")
+        return PostCompletionSettings()
+
+
+def is_post_completion_enabled() -> bool:
+    """Check if post-completion automation is enabled."""
+    config = load_post_completion_config()
+    return config.post_completion.enabled
+
+
+def is_review_enabled() -> bool:
+    """Check if automated code review is enabled."""
+    config = load_post_completion_config()
+    return config.review.enabled
+
+
+def is_review_auto_launch() -> bool:
+    """Check if review should auto-launch on task completion."""
+    config = load_post_completion_config()
+    return config.review.auto_launch
+
+
+def get_review_template() -> str:
+    """Get the review team template name."""
+    config = load_post_completion_config()
+    return config.review.team_template
+
+
+def is_feedback_enabled() -> bool:
+    """Check if feedback collection is enabled."""
+    config = load_post_completion_config()
+    return config.feedback.enabled
+
+
+def is_feedback_auto_collect() -> bool:
+    """Check if feedback should be auto-collected."""
+    config = load_post_completion_config()
+    return config.feedback.auto_collect
+
+
+def get_feedback_collect_types() -> list[str]:
+    """Get the types of feedback to collect."""
+    config = load_post_completion_config()
+    return config.feedback.collect_types
+
+
+def get_feedback_store_backend() -> str:
+    """Get the feedback storage backend."""
+    config = load_post_completion_config()
+    return config.feedback.store_backend
+
+
+def is_optimization_enabled() -> bool:
+    """Check if optimization engine is enabled."""
+    config = load_post_completion_config()
+    return config.optimization.enabled
+
+
+def get_optimization_interval_hours() -> int:
+    """Get the optimization analysis interval in hours."""
+    config = load_post_completion_config()
+    return config.optimization.analysis_interval_hours
+
+
+def get_optimization_mode() -> str:
+    """Get the optimization mode."""
+    config = load_post_completion_config()
+    return config.optimization.optimization_mode
+
+
+def are_optimization_suggestions_enabled() -> bool:
+    """Check if optimization suggestions are enabled."""
+    config = load_post_completion_config()
+    return config.optimization.suggestions_enabled
