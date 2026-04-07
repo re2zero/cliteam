@@ -51,6 +51,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["clawteam"]
+artifacts = ["clawteam/templates/*.toml"]
+shared-data = { "clawteam/templates" = "share/clawteam/templates" }
 
 [tool.hatch.build.targets.sdist]
 include = [

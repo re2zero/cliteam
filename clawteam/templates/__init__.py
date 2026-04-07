@@ -53,15 +53,15 @@ _BUILTIN_DIR = Path(__file__).parent
 _USER_DIR = Path.home() / ".clawteam" / "templates"
 
 
-def ensure_user_templates() -> None:
+def ensure_user_templates(overwrite: bool = False) -> None:
     _USER_DIR.mkdir(parents=True, exist_ok=True)
     for src in _BUILTIN_DIR.glob("*.toml"):
         dst = _USER_DIR / src.name
-        if not dst.is_file():
+        if overwrite or not dst.is_file():
             dst.write_bytes(src.read_bytes())
 
 
-ensure_user_templates()
+ensure_user_templates(overwrite=True)
 
 
 # ---------------------------------------------------------------------------
@@ -130,10 +130,7 @@ def load_template(name: str) -> TemplateDef:
     if builtin_path.is_file():
         return _parse_toml(builtin_path)
 
-    raise FileNotFoundError(
-        f"Template '{name}' not found. "
-        f"Searched: {_USER_DIR}, {_BUILTIN_DIR}"
-    )
+    raise FileNotFoundError(f"Template '{name}' not found. Searched: {_USER_DIR}, {_BUILTIN_DIR}")
 
 
 def list_templates() -> list[dict[str, str]]:

@@ -107,12 +107,9 @@ _install_skills() {
         skill_name="$(basename "${skill_path}")"
         for target in "${targets[@]}"; do
             mkdir -p "${target}"
-            if [ -d "${target}/${skill_name}" ]; then
-                info "  ${skill_name} -> ${target}/ (already exists, skipping)"
-            else
-                cp -rL "${skill_path}" "${target}/${skill_name}"
-                info "  ${skill_name} -> ${target}/${skill_name}"
-            fi
+            rm -rf "${target}/${skill_name}"
+            cp -rL "${skill_path}" "${target}/${skill_name}"
+            info "  ${skill_name} -> ${target}/${skill_name}"
         done
         count=$((count + 1))
     done
