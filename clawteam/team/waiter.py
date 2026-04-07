@@ -140,6 +140,10 @@ class TaskWaiter:
                         self._messages_received += 1
                         if self.on_message:
                             self.on_message(msg)
+                    
+                    # Gracefully shutdown all worker sessions now that all tasks are complete
+                    self._shutdown_all_workers()
+                    
                     elapsed = time.monotonic() - start
                     return WaitResult(
                         status="completed",
@@ -465,6 +469,46 @@ class TaskWaiter:
             self._nudged_agents.discard(agent_name)
             self._output_hashes.pop(agent_name, None)
             self._idle_counts.pop(agent_name, None)
+
+
+    def _shutdown_all_workers(self) -> None:
+        """Gracefully shutdown all active worker sessions for this team."""
+        try:
+            from clawteam.spawn.registry import get_registry, stop_agent
+        except ImportError as exc:
+            logging.warning("Cannot shutdown workers: spawn registry not available: %s", exc)
+            return
+        
+        try:
+            registry = get_registry(self.team_name)
+        except Exception as exc:
+            logging.warning("Failed to load worker registry: %s", exc)
+            return
+        
+        shutdown_count = 0
+        failed_count = 0
+        
+        for agent_name in list(registry.keys()):
+            if agent_name == self.agent_name:
+                continue  # Never shutdown the leader itself
+                
+            try:
+                stopped = stop_agent(self.team_name, agent_name)
+                if stopped:
+                    shutdown_count += 1
+                    logging.info("Successfully shutdown completed worker '%s'", agent_name)
+                else:
+                    failed_count += 1
+                    logging.warning("Worker '%s' could not be stopped (already terminated?)", agent_name)
+            except Exception as exc:
+                failed_count += 1
+                logging.warning("Failed to shutdown worker '%s': %s", agent_name, exc, exc_info=True)
+        
+        if shutdown_count > 0 or failed_count > 0:
+            logging.info(
+                "Task completion cleanup: shutdown %d workers, %d failed to stop",
+                shutdown_count, failed_count
+            )
 
 
 def _task_summary(task: TaskItem) -> dict:

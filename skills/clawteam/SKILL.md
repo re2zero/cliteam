@@ -242,6 +242,94 @@ own independent session — it does NOT run inside a spawned worker.
 - `task wait` includes idle watchdog that auto-kills and respawns stalled workers
 - **NEVER spawn a leader via `clawteam spawn` in Mode 2** — the current session IS the leader
 
+## CRITICAL: Team Name Consistency
+
+**ALWAYS use the SAME team name throughout the entire workflow.** Team name inconsistency causes orphaned worker sessions that will never be cleaned up.
+
+### ✅ CORRECT — Consistent team name:
+```bash
+TEAM_NAME="my-project"
+
+# 1. Create team
+clawteam team spawn-team $TEAM_NAME
+
+# 2. Create tasks (same team name)
+clawteam task create $TEAM_NAME "Task 1"
+
+# 3. Spawn workers (SAME team name!)
+clawteam spawn --team $TEAM_NAME --agent-name worker1 --task "..." wsh claude
+clawteam spawn --team $TEAM_NAME --agent-name worker2 --task "..." wsh claude
+
+# 4. Wait for completion (same team name)
+clawteam task wait $TEAM_NAME
+
+# 5. Cleanup
+clawteam team cleanup $TEAM_NAME
+```
+
+### ❌ WRONG — Inconsistent team names causes orphans:
+```bash
+# Team created with "my-project"
+clawteam team spawn-team my-project
+
+# Tasks created for "my-project"
+clawteam task create my-project "Task 1"
+
+# BUT workers spawned with WRONG team name!
+clawteam spawn --team wrong-name ...  # Creates orphaned registry!
+clawteam spawn --team another-name ...
+
+# task wait only cleans "my-project" registry
+# Orphans in wrong-name/ and another-name/ NEVER get cleaned!
+```
+
+### Why This Matters:
+
+Each team has its own spawn registry (`~/.clawteam/teams/<team>/spawn_registry.json`):
+
+```
+~/.clawteam/teams/
+├── my-project/spawn_registry.json      # task wait cleans this
+├── wrong-name/spawn_registry.json      # ORPHANED - never cleaned!
+└── another-name/spawn_registry.json    # ORPHANED - never cleaned!
+```
+
+When workers are registered under a different team:
+- Their wsh blocks/tmux sessions persist forever
+- Task completion cleanup (`_shutdown_all_workers`) only cleans the correct team's registry
+- Manual cleanup required: `wsh deleteblock -b <block-id>` or delete the orphan team
+
+### Verification:
+
+After task completion, verify no orphaned sessions:
+
+```bash
+# Check for orphaned wsh blocks
+wsh blocks list | grep -E "test|demo|my_"
+
+# Check for orphaned team registries
+ls ~/.clawteam/teams/  # Look for stray team names
+
+# Manual cleanup if orphans found
+for block in <list-of-block-ids>; do
+    wsh deleteblock -b $block
+done
+```
+
+### Rule of Thumb:
+
+Define team name as a variable or alias and reuse it:
+
+```bash
+TEAM="my-feature-branch"  # ONE SOURCE OF TRUTH
+
+# Use $TEAM everywhere
+clawteam team spawn-team $TEAM
+clawteam task create $TEAM "..."
+clawteam spawn --team $TEAM --agent-name ...
+clawteam task wait $TEAM
+```
+
 ## Additional Resources
 
 - **`references/data-model.md`** — Task statuses, message types, file storage layout, env vars
