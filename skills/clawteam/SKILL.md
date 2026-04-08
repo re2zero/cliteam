@@ -8,7 +8,7 @@ description: >
   "agent inbox", "task board", "spawn worker". Also trigger when the task is
   complex enough to benefit from splitting into subtasks and delegating to
   multiple agents, or when work scope exceeds what a single agent can handle.
-version: 0.6.0
+version: 0.7.0
 ---
 
 # ClawTeam Multi-Agent Coordination
@@ -16,10 +16,97 @@ version: 0.6.0
 ClawTeam is a CLI tool for coordinating multiple AI agents as a team. Operations
 are via `clawteam` CLI, data in `~/.clawteam/`.
 
-## CRITICAL: Full Orchestration Flow
+## CRITICAL: Template-First Strategy
 
-When the user asks to "create a team to do X", you MUST follow this exact sequence.
-Do NOT skip steps or jump directly to spawning.
+**ALWAYS check for a matching template BEFORE doing manual orchestration.**
+Templates encapsulate battle-tested workflows with proper stage ordering, quality gates,
+agent roles, and coordination protocols. Using them avoids subtle errors and omissions.
+
+### Step 1: Detect Project Type (Use Smart Selection)
+
+**Method A: CLI-based detection (recommended for direct use)**
+
+```bash
+clawteam template suggest <project-directory>
+```
+
+This command scans the project (CMakeLists.txt, debian/control, source files) and returns
+the best matching template deterministically.
+
+**Method B: Programmatic smart selection (for Python-based agents)**
+
+```python
+from clawteam.templates import smart_select_template
+
+# Automatically select the best template
+template_name = smart_select_template(project_dir)
+# Returns: "dde-trellis" for DDE projects, "software-dev" for others
+
+# Then launch with the selected template
+import subprocess
+subprocess.run([
+    "clawteam", "launch", template_name,
+    "--team", team_name,
+    "--goal", user_goal
+])
+```
+
+**Interpreting results:**
+
+| Template | When to use | Notes |
+|----------|------------|-------|
+| `dde-trellis` | DDE projects (DTK/Qt detected) | **Requires trellis initialization** first: `/trellis/onboard` |
+| `software-dev` | Generic fallback | Works for most general software projects |
+| Other specialized | Matched via signal detection | Use directly when returned |
+
+**Do NOT use `template list`** — `template suggest` or `smart_select_template()` already considers all available templates and minimizes unnecessary LLM decisions.
+
+### Step 3: Use Template if Match Found → Mode 1 (Launch)
+
+**This is the PREFERRED path.** When a template matches:
+
+```bash
+# For templates that define a full team:
+clawteam launch <template-name> -g "<user's actual goal>" --team <team-name>
+
+# With backend override if user specifies wsh:
+clawteam launch <template-name> -g "<user's actual goal>" --backend wsh
+
+# With workspace isolation:
+clawteam launch <template-name> -g "<user's actual goal>" --workspace
+```
+
+**WHAT `clawteam launch` DOES FOR YOU (do NOT duplicate these steps):**
+1. Creates the team with the template's leader
+2. Adds all template-defined agents as team members
+3. Creates all template-defined tasks (with dependencies)
+4. Spawns ALL agents (leader + workers) with their template-defined prompts
+5. Starts a background task waiter for completion monitoring
+
+**YOUR ONLY JOB after `clawteam launch` is SUPERVISION:**
+```bash
+# Monitor progress
+clawteam board show <team-name>
+
+# Attach to watch agents work (tmux only)
+tmux attach -t clawteam-<team-name>
+
+# Check messages from agents
+clawteam inbox receive <team-name> --agent <leader-name>
+```
+
+**NEVER do these after `clawteam launch`:**
+- Do NOT manually create the team again (`team spawn-team`)
+- Do NOT manually create tasks (`task create`) — the template already did this
+- Do NOT manually spawn workers (`spawn --agent-name`) — the template already did this
+
+### Step 4: No Template Match → Mode 2 (Manual)
+
+Only fall back to manual orchestration when NO template matches the user's request.
+
+## Mode 2: Manual Orchestration (FALLBACK ONLY)
+
+Use ONLY when no template matches. Follow this exact sequence.
 
 ### Phase 0: Pre-flight — Read Design & Requirements
 
@@ -65,7 +152,7 @@ T3=$(clawteam --json task create <team> "<task-subject>" -o worker3 -d "<descrip
 - Use `--blocked-by` for ordering constraints
 - Verify with `clawteam task list <team>` before proceeding
 
-### Phase 3: Spawn Workers (launch mode)
+### Phase 3: Spawn Workers
 
 Spawn each worker as an independent session. The leader stays in its own session.
 
@@ -181,34 +268,13 @@ After ALL tasks are completed:
    clawteam team cleanup <team> --force
    ```
 
-## Two Modes
-
-### Mode 1: Launch (template-based, fully automated)
-
-Use when the task matches a known template.
-
-```bash
-clawteam template list
-clawteam launch software-dev -g "Build a REST API with auth"
-clawteam launch code-review -g "Review the auth module changes"
-```
-
-Monitor: `clawteam board show <team>` or `tmux attach -t clawteam-<team>`.
-
-### Mode 2: Manual (custom orchestration)
-
-Use when the task needs dynamic orchestration. Follow Phase 0-5 above.
-
-**IMPORTANT:** In Mode 2, the current AI session acts as leader. It creates the team,
-creates tasks, spawns workers, then enters the supervision loop. The leader has its
-own independent session — it does NOT run inside a spawned worker.
-
 ## Leader Responsibilities (Summary)
 
 | Responsibility | How |
 |---|---|
-| Create team & tasks | `clawteam team spawn-team`, `clawteam task create` |
-| Spawn workers | `clawteam spawn --team <team> --agent-name <name> --task "..."` |
+| Check templates first | `clawteam template list` → match → `clawteam launch` |
+| Create team & tasks | `clawteam team spawn-team`, `clawtask task create` (Mode 2 only) |
+| Spawn workers | `clawteam spawn --team <team> --agent-name <name> --task "..."` (Mode 2 only) |
 | Monitor progress | `clawteam board show <team>`, `clawteam inbox receive` |
 | Assign new tasks | `clawteam task create`, `clawteam task update --owner` |
 | Nudge stalled workers | `tmux send-keys` or `wsh rpc send-input` (see protocol) |
@@ -241,6 +307,9 @@ own independent session — it does NOT run inside a spawned worker.
 - All commands support `--json` (place before subcommand): `clawteam --json task list <team>`
 - `task wait` includes idle watchdog that auto-kills and respawns stalled workers
 - **NEVER spawn a leader via `clawteam spawn` in Mode 2** — the current session IS the leader
+- **`clawteam launch` already creates team, tasks, and spawns all agents** — do NOT duplicate
+- For `dde-trellis` template: 7-stage workflow with quality gates — trust the process. **Requires `/trellis/onboard` first.**
+- Long template prompts are injected via post-launch RPC, not command-line args — do not worry about prompt length
 
 ## CRITICAL: Team Name Consistency
 
@@ -281,39 +350,6 @@ clawteam spawn --team another-name ...
 
 # task wait only cleans "my-project" registry
 # Orphans in wrong-name/ and another-name/ NEVER get cleaned!
-```
-
-### Why This Matters:
-
-Each team has its own spawn registry (`~/.clawteam/teams/<team>/spawn_registry.json`):
-
-```
-~/.clawteam/teams/
-├── my-project/spawn_registry.json      # task wait cleans this
-├── wrong-name/spawn_registry.json      # ORPHANED - never cleaned!
-└── another-name/spawn_registry.json    # ORPHANED - never cleaned!
-```
-
-When workers are registered under a different team:
-- Their wsh blocks/tmux sessions persist forever
-- Task completion cleanup (`_shutdown_all_workers`) only cleans the correct team's registry
-- Manual cleanup required: `wsh deleteblock -b <block-id>` or delete the orphan team
-
-### Verification:
-
-After task completion, verify no orphaned sessions:
-
-```bash
-# Check for orphaned wsh blocks
-wsh blocks list | grep -E "test|demo|my_"
-
-# Check for orphaned team registries
-ls ~/.clawteam/teams/  # Look for stray team names
-
-# Manual cleanup if orphans found
-for block in <list-of-block-ids>; do
-    wsh deleteblock -b $block
-done
 ```
 
 ### Rule of Thumb:

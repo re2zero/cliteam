@@ -3044,10 +3044,13 @@ def lifecycle_on_exit(
 
     stop_agent(team, agent)
 
+
 @lifecycle_app.command("check-zombies")
 def lifecycle_check_zombies(
     team: str = typer.Option(..., "--team", "-t", help="Team name"),
-    max_hours: float = typer.Option(2.0, "--max-hours", help="Warn if agent has been running longer than this many hours"),
+    max_hours: float = typer.Option(
+        2.0, "--max-hours", help="Warn if agent has been running longer than this many hours"
+    ),
 ):
     """Warn about agents that have been running unusually long (possible zombies).
 
@@ -3061,7 +3064,9 @@ def lifecycle_check_zombies(
     if not zombies:
         _output(
             {"team": team, "zombies": []},
-            lambda d: console.print(f"[green]✓[/green] No zombie agents detected for team '{team}'"),
+            lambda d: console.print(
+                f"[green]✓[/green] No zombie agents detected for team '{team}'"
+            ),
         )
         return
 
@@ -3109,10 +3114,22 @@ def spawn_agent(
         help="Create isolated git worktree (default: auto)",
     ),
     repo: Optional[str] = typer.Option(None, "--repo", help="Git repo path (default: cwd)"),
-    skip_permissions: Optional[bool] = typer.Option(None, "--skip-permissions/--no-skip-permissions", help="Skip tool approval for claude (default: from config, true)"),
-    resume: bool = typer.Option(False, "--resume", "-r", help="Resume previous session if available"),
-    replace: bool = typer.Option(False, "--replace", help="Replace a running agent with the same name"),
-    skill: Optional[list[str]] = typer.Option(None, "--skill", help="Skill name(s) to inject into the agent's system prompt (repeatable, claude only)"),
+    skip_permissions: Optional[bool] = typer.Option(
+        None,
+        "--skip-permissions/--no-skip-permissions",
+        help="Skip tool approval for claude (default: from config, true)",
+    ),
+    resume: bool = typer.Option(
+        False, "--resume", "-r", help="Resume previous session if available"
+    ),
+    replace: bool = typer.Option(
+        False, "--replace", help="Replace a running agent with the same name"
+    ),
+    skill: Optional[list[str]] = typer.Option(
+        None,
+        "--skill",
+        help="Skill name(s) to inject into the agent's system prompt (repeatable, claude only)",
+    ),
 ):
     """Spawn a new agent process with identity + task as its initial prompt.
 
@@ -4022,6 +4039,29 @@ def template_list():
         console.print(table)
 
     _output(templates, _human)
+
+
+@template_app.command("suggest")
+def template_suggest(
+    project_dir: str = typer.Argument(".", help="Project directory to scan"),
+):
+    """Suggest the best template for a project based on deterministic detection."""
+    from clawteam.templates import suggest_template
+
+    result = suggest_template(project_dir)
+
+    def _human(data):
+        tmpl = data["template"]
+        conf = data["confidence"]
+        signals = data["signals"]
+        style = "bold green" if conf == "high" else "dim"
+        console.print(
+            f"Suggested template: [bold cyan]{tmpl}[/bold cyan]  (confidence: [{style}]{conf}[/{style}])"
+        )
+        for s in signals:
+            console.print(f"  • {s}")
+
+    _output(result, _human)
 
 
 @template_app.command("show")
