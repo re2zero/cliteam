@@ -4130,7 +4130,8 @@ def launch_team(
         None, "--command", help="Override agent command"
     ),
 ):
-    """Launch a full agent team from a template with one command."""
+    """Launch a team from a template. Spawns leader first, workers launched on-demand by leader."""
+    import json
     import os as _os
     import threading as _threading
 
@@ -4140,6 +4141,8 @@ def launch_team(
     from clawteam.spawn.prompt import build_agent_prompt
     from clawteam.team.manager import TeamManager
     from clawteam.team.tasks import TaskStore
+    from clawteam.team.models import get_data_dir
+    from clawteam.paths import validate_identifier, ensure_within_root
     from clawteam.templates import TemplateDef, load_template, render_task
 
     # 1. Load template
@@ -4212,8 +4215,9 @@ def launch_team(
             console.print("[red]Not in a git repository. Use --repo or cd into a repo.[/red]")
             raise typer.Exit(1)
 
-    # 8. Spawn all agents (leader first, then workers)
-    all_agents = [tmpl.leader] + list(tmpl.agents)
+    # 8. Spawn leader only, workers launched on-demand by leader
+    agents_to_spawn = [tmpl.leader]
+
     spawned: list[dict[str, str]] = []
     resolved_profile = None
     if profile:
@@ -4223,7 +4227,7 @@ def launch_team(
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1)
 
-    for agent in all_agents:
+    for agent in agents_to_spawn:
         a_id = agent_ids[agent.name]
         a_cmd = agent.command or cmd
         a_env: dict[str, str] = {}

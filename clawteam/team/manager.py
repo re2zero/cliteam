@@ -40,9 +40,7 @@ def _save_config(config: TeamConfig) -> None:
     path = _config_path(config.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(
-        config.model_dump_json(indent=2, by_alias=True), encoding="utf-8"
-    )
+    tmp.write_text(config.model_dump_json(indent=2, by_alias=True), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -118,12 +116,14 @@ class TeamManager:
                 except ValueError:
                     continue
                 if config:
-                    teams.append({
-                        "name": config.name,
-                        "description": config.description,
-                        "leadAgentId": config.lead_agent_id,
-                        "memberCount": len(config.members),
-                    })
+                    teams.append(
+                        {
+                            "name": config.name,
+                            "description": config.description,
+                            "leadAgentId": config.lead_agent_id,
+                            "memberCount": len(config.members),
+                        }
+                    )
         return teams
 
     @staticmethod
@@ -188,6 +188,7 @@ class TeamManager:
         # Best-effort cleanup of git workspaces before removing dirs
         try:
             from clawteam.workspace import get_workspace_manager
+
             ws_mgr = get_workspace_manager()
             if ws_mgr:
                 ws_mgr.cleanup_team(team_name)
