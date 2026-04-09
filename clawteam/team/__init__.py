@@ -1,8 +1,10 @@
 """Team coordination layer for multi-agent collaboration."""
 
+from clawteam.team.completion import CompletionHandler
 from clawteam.team.lifecycle import LifecycleManager
 from clawteam.team.mailbox import MailboxManager
 from clawteam.team.manager import TeamManager
+from clawteam.team.optimization import OptimizationEngine
 from clawteam.team.plan import PlanManager
 from clawteam.team.watcher import InboxWatcher
 
@@ -12,6 +14,12 @@ def __getattr__(name: str):
     if name == "TaskStore":
         from clawteam.team.tasks import TaskStore
         return TaskStore
+    elif name == "FeedbackStore":
+        from clawteam.store.feedback import FeedbackStore
+        return FeedbackStore
+    elif name == "ReviewLauncher":
+        from clawteam.team.review import ReviewLauncher
+        return ReviewLauncher
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -22,4 +30,8 @@ __all__ = [
     "PlanManager",
     "LifecycleManager",
     "InboxWatcher",
+    "CompletionHandler",
+    "ReviewLauncher",
+    "FeedbackStore",
+    "OptimizationEngine",
 ]

@@ -20,6 +20,9 @@ from rich.table import Table
 from clawteam import __version__
 from clawteam.timefmt import format_timestamp
 
+# Import completion handler for post-completion automation
+from clawteam.team.completion import CompletionHandler
+
 app = typer.Typer(
     name="clawteam",
     help="Framework-agnostic multi-agent coordination CLI",
@@ -2540,6 +2543,7 @@ def task_wait(
                 f" Reset {len(abandoned_tasks)} task(s) to pending: {task_subjects}"
             )
 
+    completion_handler = CompletionHandler()
     waiter = TaskWaiter(
         team_name=team,
         agent_name=agent_name,
@@ -2550,6 +2554,7 @@ def task_wait(
         on_message=_on_message,
         on_progress=_on_progress,
         on_agent_dead=_on_agent_dead,
+        completion_handler=completion_handler,
     )
     result = waiter.wait()
 
@@ -3039,10 +3044,13 @@ def lifecycle_on_exit(
 
     stop_agent(team, agent)
 
+
 @lifecycle_app.command("check-zombies")
 def lifecycle_check_zombies(
     team: str = typer.Option(..., "--team", "-t", help="Team name"),
-    max_hours: float = typer.Option(2.0, "--max-hours", help="Warn if agent has been running longer than this many hours"),
+    max_hours: float = typer.Option(
+        2.0, "--max-hours", help="Warn if agent has been running longer than this many hours"
+    ),
 ):
     """Warn about agents that have been running unusually long (possible zombies).
 
@@ -3056,7 +3064,9 @@ def lifecycle_check_zombies(
     if not zombies:
         _output(
             {"team": team, "zombies": []},
-            lambda d: console.print(f"[green]✓[/green] No zombie agents detected for team '{team}'"),
+            lambda d: console.print(
+                f"[green]✓[/green] No zombie agents detected for team '{team}'"
+            ),
         )
         return
 
@@ -3104,10 +3114,22 @@ def spawn_agent(
         help="Create isolated git worktree (default: auto)",
     ),
     repo: Optional[str] = typer.Option(None, "--repo", help="Git repo path (default: cwd)"),
-    skip_permissions: Optional[bool] = typer.Option(None, "--skip-permissions/--no-skip-permissions", help="Skip tool approval for claude (default: from config, true)"),
-    resume: bool = typer.Option(False, "--resume", "-r", help="Resume previous session if available"),
-    replace: bool = typer.Option(False, "--replace", help="Replace a running agent with the same name"),
-    skill: Optional[list[str]] = typer.Option(None, "--skill", help="Skill name(s) to inject into the agent's system prompt (repeatable, claude only)"),
+    skip_permissions: Optional[bool] = typer.Option(
+        None,
+        "--skip-permissions/--no-skip-permissions",
+        help="Skip tool approval for claude (default: from config, true)",
+    ),
+    resume: bool = typer.Option(
+        False, "--resume", "-r", help="Resume previous session if available"
+    ),
+    replace: bool = typer.Option(
+        False, "--replace", help="Replace a running agent with the same name"
+    ),
+    skill: Optional[list[str]] = typer.Option(
+        None,
+        "--skill",
+        help="Skill name(s) to inject into the agent's system prompt (repeatable, claude only)",
+    ),
 ):
     """Spawn a new agent process with identity + task as its initial prompt.
 
@@ -4019,6 +4041,29 @@ def template_list():
     _output(templates, _human)
 
 
+@template_app.command("suggest")
+def template_suggest(
+    project_dir: str = typer.Argument(".", help="Project directory to scan"),
+):
+    """Suggest the best template for a project based on deterministic detection."""
+    from clawteam.templates import suggest_template
+
+    result = suggest_template(project_dir)
+
+    def _human(data):
+        tmpl = data["template"]
+        conf = data["confidence"]
+        signals = data["signals"]
+        style = "bold green" if conf == "high" else "dim"
+        console.print(
+            f"Suggested template: [bold cyan]{tmpl}[/bold cyan]  (confidence: [{style}]{conf}[/{style}])"
+        )
+        for s in signals:
+            console.print(f"  • {s}")
+
+    _output(result, _human)
+
+
 @template_app.command("show")
 def template_show(
     name: str = typer.Argument(..., help="Template name"),
@@ -4085,7 +4130,8 @@ def launch_team(
         None, "--command", help="Override agent command"
     ),
 ):
-    """Launch a full agent team from a template with one command."""
+    """Launch a team from a template. Spawns leader first, workers launched on-demand by leader."""
+    import json
     import os as _os
     import threading as _threading
 
@@ -4095,6 +4141,8 @@ def launch_team(
     from clawteam.spawn.prompt import build_agent_prompt
     from clawteam.team.manager import TeamManager
     from clawteam.team.tasks import TaskStore
+    from clawteam.team.models import get_data_dir
+    from clawteam.paths import validate_identifier, ensure_within_root
     from clawteam.templates import TemplateDef, load_template, render_task
 
     # 1. Load template
@@ -4167,8 +4215,9 @@ def launch_team(
             console.print("[red]Not in a git repository. Use --repo or cd into a repo.[/red]")
             raise typer.Exit(1)
 
-    # 8. Spawn all agents (leader first, then workers)
-    all_agents = [tmpl.leader] + list(tmpl.agents)
+    # 8. Spawn leader only, workers launched on-demand by leader
+    agents_to_spawn = [tmpl.leader]
+
     spawned: list[dict[str, str]] = []
     resolved_profile = None
     if profile:
@@ -4178,7 +4227,7 @@ def launch_team(
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1)
 
-    for agent in all_agents:
+    for agent in agents_to_spawn:
         a_id = agent_ids[agent.name]
         a_cmd = agent.command or cmd
         a_env: dict[str, str] = {}
@@ -4283,6 +4332,7 @@ def launch_team(
                     f"Reset {len(abandoned_tasks)} task(s) to pending.[/yellow]"
                 )
 
+            completion_handler = CompletionHandler()
             waiter = TaskWaiter(
                 team_name=t_name,
                 agent_name=tmpl.leader.name,
@@ -4292,6 +4342,7 @@ def launch_team(
                 on_progress=_on_progress,
                 on_agent_dead=_on_agent_dead,
                 observe_only=True,
+                completion_handler=completion_handler,
             )
             result = waiter.wait()
             if result.status == "completed":

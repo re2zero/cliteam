@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -53,20 +54,21 @@ _BUILTIN_DIR = Path(__file__).parent
 _USER_DIR = Path.home() / ".clawteam" / "templates"
 
 
-def ensure_user_templates() -> None:
+def ensure_user_templates(overwrite: bool = False) -> None:
     _USER_DIR.mkdir(parents=True, exist_ok=True)
     for src in _BUILTIN_DIR.glob("*.toml"):
         dst = _USER_DIR / src.name
-        if not dst.is_file():
+        if overwrite or not dst.is_file():
             dst.write_bytes(src.read_bytes())
 
 
-ensure_user_templates()
+ensure_user_templates(overwrite=True)
 
 
 # ---------------------------------------------------------------------------
 # Variable substitution helper
 # ---------------------------------------------------------------------------
+
 
 class _SafeDict(dict):
     """dict subclass that keeps unknown {placeholders} intact."""
@@ -84,21 +86,17 @@ def render_task(task: str, **variables: str) -> str:
 # Loading
 # ---------------------------------------------------------------------------
 
+
 def _parse_toml(path: Path) -> TemplateDef:
-    """Parse a TOML template file into a TemplateDef."""
     with open(path, "rb") as f:
         raw = tomllib.load(f)
 
     tmpl = raw.get("template", {})
 
-    # Parse leader
     leader_data = tmpl.get("leader", {})
     leader = AgentDef(**leader_data)
 
-    # Parse agents
     agents = [AgentDef(**a) for a in tmpl.get("agents", [])]
-
-    # Parse tasks
     tasks = [TaskDef(**t) for t in tmpl.get("tasks", [])]
 
     return TemplateDef(
@@ -113,34 +111,22 @@ def _parse_toml(path: Path) -> TemplateDef:
 
 
 def load_template(name: str) -> TemplateDef:
-    """Load a template by name.
-
-    Search order: user templates (~/.clawteam/templates/) first,
-    then built-in templates (clawteam/templates/).
-    """
     filename = f"{name}.toml"
 
-    # User templates take priority
     user_path = _USER_DIR / filename
     if user_path.is_file():
         return _parse_toml(user_path)
 
-    # Built-in templates
     builtin_path = _BUILTIN_DIR / filename
     if builtin_path.is_file():
         return _parse_toml(builtin_path)
 
-    raise FileNotFoundError(
-        f"Template '{name}' not found. "
-        f"Searched: {_USER_DIR}, {_BUILTIN_DIR}"
-    )
+    raise FileNotFoundError(f"Template '{name}' not found. Searched: {_USER_DIR}, {_BUILTIN_DIR}")
 
 
 def list_templates() -> list[dict[str, str]]:
-    """List all available templates (user + builtin, user overrides builtin)."""
     seen: dict[str, dict[str, str]] = {}
 
-    # Built-in templates first (can be overridden)
     if _BUILTIN_DIR.is_dir():
         for p in sorted(_BUILTIN_DIR.glob("*.toml")):
             try:
@@ -153,7 +139,6 @@ def list_templates() -> list[dict[str, str]]:
             except Exception:
                 continue
 
-    # User templates override
     if _USER_DIR.is_dir():
         for p in sorted(_USER_DIR.glob("*.toml")):
             try:
@@ -167,3 +152,135 @@ def list_templates() -> list[dict[str, str]]:
                 continue
 
     return list(seen.values())
+
+
+# ---------------------------------------------------------------------------
+# Project detection — deterministic template suggestion
+# ---------------------------------------------------------------------------
+
+_DDE_SIGNALS = [
+    re.compile(r"find_package\s*\(\s*DTK", re.IGNORECASE),
+    re.compile(r"find_package\s*\(\s*Qt\d", re.IGNORECASE),
+    re.compile(r"find_package\s*\(\s*deepin", re.IGNORECASE),
+    re.compile(r"\bdtkcore\b"),
+    re.compile(r"\bdtkwidget\b"),
+    re.compile(r"\bdtkgui\b"),
+    re.compile(r"\bdde-"),
+]
+
+_DTE_SIGNALS = [
+    re.compile(r"include\s*\(\s*\$\{DtkCMake\}"),
+    re.compile(r"\bDtkCMake\b"),
+]
+
+
+def _read_file(path: Path, max_bytes: int = 32_000) -> str | None:
+    if not path.is_file() or path.stat().st_size > max_bytes:
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+
+def _scan_cmake(project_dir: Path) -> bool:
+    top_cmake = project_dir / "CMakeLists.txt"
+    content = _read_file(top_cmake)
+    if content is None:
+        return False
+    for pattern in _DDE_SIGNALS:
+        if pattern.search(content):
+            return True
+    for pattern in _DTE_SIGNALS:
+        if pattern.search(content):
+            return True
+    return False
+
+
+def _scan_debian_control(project_dir: Path) -> bool:
+    for candidate in (
+        project_dir / "debian" / "control",
+        project_dir / "debian" / "control.in",
+    ):
+        content = _read_file(candidate)
+        if content is None:
+            continue
+        for pattern in _DDE_SIGNALS:
+            if pattern.search(content):
+                return True
+    return False
+
+
+def _scan_source_files(project_dir: Path) -> bool:
+    include_exts = {".h", ".hpp", ".cpp", ".cc", ".cxx"}
+    for candidate in (
+        project_dir / "src",
+        project_dir / "lib",
+        project_dir / "include",
+    ):
+        if not candidate.is_dir():
+            continue
+        checked = 0
+        for p in candidate.rglob("*"):
+            if checked >= 30:
+                break
+            if p.suffix not in include_exts:
+                continue
+            content = _read_file(p)
+            if content is None:
+                continue
+            for pattern in _DDE_SIGNALS:
+                if pattern.search(content):
+                    return True
+            checked += 1
+    return False
+
+
+def suggest_template(project_dir: str | Path) -> dict[str, str | list[str]]:
+    """Deterministically suggest the best template for a project.
+
+    Returns {"template": "<name>", "confidence": "high"|"low", "signals": ["..."]}.
+    """
+    root = Path(project_dir).resolve()
+    signals: list[str] = []
+
+    if _scan_cmake(root):
+        signals.append("CMakeLists.txt contains DTK/Qt/deepin references")
+
+    if not signals and _scan_debian_control(root):
+        signals.append("debian/control contains DTK/deepin dependencies")
+
+    if not signals and _scan_source_files(root):
+        signals.append("source files contain DTK references")
+
+    if signals:
+        return {
+            "template": "dde-trellis",
+            "confidence": "high",
+            "signals": signals,
+        }
+
+    return {
+        "template": "software-dev",
+        "confidence": "low",
+        "signals": ["no DDE/DTK signals detected, using default"],
+    }
+
+
+def smart_select_template(project_dir: str | Path) -> str:
+    """Smart template selection: suggest-first approach.
+
+    Uses deterministic suggestion first. High confidence templates are returned
+    immediately without LLM involvement. Low confidence returns the default template.
+
+    This minimizes unnecessary LLM calls while providing consistent results for
+    well-defined project types (e.g., DDE projects).
+
+    Args:
+        project_dir: Path to the project directory.
+
+    Returns:
+        Template name to use.
+    """
+    suggestion = suggest_template(project_dir)
+    return str(suggestion["template"])
