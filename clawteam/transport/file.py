@@ -1,16 +1,49 @@
-"""File-based transport: messages stored as JSON files in inbox directories."""
-
-from __future__ import annotations
-
-import fcntl
 import json
+import sys
 import time
 import uuid
 from pathlib import Path
 
+if sys.platform == "win32":
+    import msvcrt
+
+    LOCK_EX = msvcrt.LK_NBLCK
+    LOCK_NB = 0
+else:
+    import fcntl
+
+    LOCK_EX = fcntl.LOCK_EX
+    LOCK_NB = fcntl.LOCK_NB
+
+from clawteam.paths import ensure_within_root, validate_identifier
 from clawteam.team.models import get_data_dir
 from clawteam.transport.base import Transport
 from clawteam.transport.claimed import ClaimedMessage
+
+
+def unlock(file_handle) -> None:
+    if sys.platform == "win32":
+        try:
+            pos = file_handle.tell()
+            file_handle.seek(0)
+            msvcrt.locking(file_handle.fileno(), msvcrt.LK_UNLCK, 1)
+            file_handle.seek(pos)
+        except OSError:
+            pass
+
+
+def try_lock(file_handle) -> bool:
+    try:
+        if sys.platform == "win32":
+            pos = file_handle.tell()
+            file_handle.seek(0)
+            msvcrt.locking(file_handle.fileno(), LOCK_EX, 1)
+            file_handle.seek(pos)
+        else:
+            fcntl.flock(file_handle.fileno(), LOCK_EX | LOCK_NB)
+        return True
+    except OSError:
+        return False
 
 
 def _teams_root() -> Path:
@@ -18,13 +51,23 @@ def _teams_root() -> Path:
 
 
 def _inbox_dir(team_name: str, agent_name: str) -> Path:
-    d = _teams_root() / team_name / "inboxes" / agent_name
+    d = ensure_within_root(
+        _teams_root(),
+        validate_identifier(team_name, "team name"),
+        "inboxes",
+        validate_identifier(agent_name, "inbox name"),
+    )
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _dead_letter_dir(team_name: str, agent_name: str) -> Path:
-    d = _teams_root() / team_name / "dead_letters" / agent_name
+    d = ensure_within_root(
+        _teams_root(),
+        validate_identifier(team_name, "team name"),
+        "dead_letters",
+        validate_identifier(agent_name, "inbox name"),
+    )
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -48,11 +91,10 @@ def _is_locked(path: Path) -> bool:
     except Exception:
         return True
     try:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return True
-        return False
+        locked = try_lock(handle)
+        if locked:
+            unlock(handle)
+        return not locked
     finally:
         handle.close()
 
@@ -76,12 +118,13 @@ class FileTransport(Transport):
         data: bytes,
     ) -> ClaimedMessage:
         def _ack() -> None:
-            try:
-                consumed_path.unlink(missing_ok=True)
-            finally:
-                file_handle.close()
+            unlock(file_handle)
+            file_handle.close()
+            consumed_path.unlink(missing_ok=True)
 
         def _quarantine(error: str) -> None:
+            unlock(file_handle)
+            file_handle.close()
             self._quarantine_bytes(
                 agent_name,
                 data,
@@ -89,7 +132,6 @@ class FileTransport(Transport):
                 source_name=original_path.name,
                 consumed_path=consumed_path,
             )
-            file_handle.close()
 
         return ClaimedMessage(data=data, ack=_ack, quarantine=_quarantine)
 
@@ -102,7 +144,8 @@ class FileTransport(Transport):
         target = inbox / filename
         try:
             tmp.write_bytes(data)
-            tmp.replace(target)
+            import os
+            os.replace(str(tmp), str(target))
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
@@ -115,7 +158,8 @@ class FileTransport(Transport):
             if path.suffix == ".json":
                 consumed = path.with_suffix(".consumed")
                 try:
-                    path.rename(consumed)
+                    import os
+                    os.replace(str(path), str(consumed))
                 except OSError:
                     continue
             try:
@@ -124,14 +168,13 @@ class FileTransport(Transport):
                 consumed.unlink(missing_ok=True)
                 continue
 
-            try:
-                fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            if not try_lock(file_handle):
                 file_handle.close()
                 continue
             try:
                 data = file_handle.read()
             except Exception:
+                unlock(file_handle)
                 file_handle.close()
                 consumed.unlink(missing_ok=True)
                 continue
@@ -160,7 +203,8 @@ class FileTransport(Transport):
             raw_path = dead_dir / f"{raw_path.stem}-{uuid.uuid4().hex[:8]}{raw_path.suffix}"
 
         if consumed_path is not None and consumed_path.exists():
-            consumed_path.replace(raw_path)
+            import os
+            os.replace(str(consumed_path), str(raw_path))
         else:
             raw_path.write_bytes(data)
 

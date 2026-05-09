@@ -64,6 +64,19 @@ def test_apply_profile_maps_gemini_base_url_and_key(monkeypatch):
     assert env["GEMINI_API_KEY"] == "gemini-secret"
 
 
+def test_apply_profile_maps_pi_model_without_provider_envs():
+    profile = AgentProfile(
+        agent="pi",
+        model="anthropic/claude-sonnet-4.6",
+    )
+
+    command, env, agent = apply_profile(profile)
+
+    assert agent == "pi"
+    assert command == ["pi", "--model", "anthropic/claude-sonnet-4.6"]
+    assert env == {}
+
+
 def test_apply_profile_respects_explicit_target_env_overrides(monkeypatch):
     monkeypatch.setenv("CUSTOM_PROVIDER_KEY", "provider-secret")
     profile = AgentProfile(

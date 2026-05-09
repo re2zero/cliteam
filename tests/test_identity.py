@@ -4,7 +4,7 @@ from clawteam.identity import AgentIdentity, _env, _env_bool
 
 
 class TestEnvHelpers:
-    def test_env_reads_clawteam_first(self, monkeypatch):
+    def test_env_reads_oh_first(self, monkeypatch):
         monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "alpha")
         monkeypatch.setenv("CLAUDE_CODE_AGENT_NAME", "beta")
         assert _env("CLAWTEAM_AGENT_NAME", "CLAUDE_CODE_AGENT_NAME") == "alpha"
@@ -36,7 +36,7 @@ class TestEnvHelpers:
 
 
 class TestFromEnv:
-    def test_from_env_with_clawteam_vars(self, monkeypatch):
+    def test_from_env_with_oh_vars(self, monkeypatch):
         monkeypatch.setenv("CLAWTEAM_AGENT_ID", "id-123")
         monkeypatch.setenv("CLAWTEAM_AGENT_NAME", "worker-1")
         monkeypatch.setenv("CLAWTEAM_AGENT_TYPE", "researcher")

@@ -1,16 +1,17 @@
 """Tests for clawteam.team.mailbox — MailboxManager send/receive/broadcast."""
 
-import fcntl
 import json
 import os
 import socket
 import time
 from pathlib import Path
 
+import pytest
+
 from clawteam.team.mailbox import MailboxManager
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import MessageType, get_data_dir
-from clawteam.transport.file import FileTransport
+from clawteam.transport.file import FileTransport, try_lock
 
 
 @staticmethod
@@ -90,6 +91,11 @@ class TestSendReceive:
         msgs = mb.receive("leader")
         assert msgs[0].type == MessageType.join_request
         assert msgs[0].proposed_name == "worker-1"
+
+    def test_send_rejects_path_traversal_recipient(self, team_name):
+        mb = _make_mailbox(team_name)
+        with pytest.raises(ValueError, match="Invalid recipient name"):
+            mb.send(from_agent="alice", to="../bob", content="nope")
 
 
 class TestPeek:
@@ -331,7 +337,7 @@ class TestReceiveQuarantine:
         )
 
         with consumed.open("rb") as locked_file:
-            fcntl.flock(locked_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(locked_file)
             assert mb.receive("bob", limit=10) == []
             assert consumed.exists()
 
@@ -356,7 +362,7 @@ class TestReceiveQuarantine:
         )
 
         with consumed.open("rb") as locked_file:
-            fcntl.flock(locked_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(locked_file)
             assert mb.peek("bob") == []
             assert mb.peek_count("bob") == 0
 
@@ -372,14 +378,14 @@ class TestFileTransport:
         message_files = list(inbox.glob("msg-*.json"))
         assert len(message_files) == 1
 
-        original_rename = Path.rename
+        original_replace = os.replace
 
-        def fake_rename(self, target):
-            if self == message_files[0]:
+        def fake_replace(src, target):
+            if src == str(message_files[0]):
                 raise OSError("claimed by another consumer")
-            return original_rename(self, target)
+            return original_replace(src, target)
 
-        monkeypatch.setattr(Path, "rename", fake_rename)
+        monkeypatch.setattr(os, "replace", fake_replace)
 
         assert transport.fetch("bob", consume=True) == []
         assert len(list(inbox.glob("msg-*.json"))) == 1

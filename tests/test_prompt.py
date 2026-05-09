@@ -26,12 +26,13 @@ class TestBuildAgentPrompt:
             team_name="team", leader_name="lead", task="do stuff",
         )
         assert "clawteam task list" in prompt
+        assert "If that list is empty" in prompt
         assert "clawteam task update" in prompt
         assert "commit your changes" in prompt
         assert "git add -A && git commit" in prompt
         assert "clawteam inbox send" in prompt
         assert "clawteam cost report" in prompt
-        assert "clawteam session save" in prompt
+        assert "clawteam session save" not in prompt
 
     def test_prompt_includes_user_when_provided(self):
         prompt = build_agent_prompt(
@@ -98,5 +99,8 @@ class TestBuildAgentPrompt:
         )
         assert "Worker Loop Protocol" in prompt
         assert "Do not exit after the first task" in prompt
+        assert "do not start a detached daemon/watch loop" in prompt
+        assert "Keep the monitoring/reporting loop in the foreground" in prompt
+        assert "scan `clawteam task list my-team`" in prompt
         assert "clawteam inbox receive my-team --agent dev" in prompt
         assert "clawteam lifecycle idle my-team" in prompt

@@ -22,6 +22,7 @@ ClawTeam agents use these environment variables for identity:
 | `CLAWTEAM_DATA_DIR` | Override data directory | `/tmp/clawteam-data` |
 
 When spawning agents via `clawteam spawn`, these are set automatically.
+Legacy `OH_*` aliases remain accepted for compatibility.
 
 ---
 

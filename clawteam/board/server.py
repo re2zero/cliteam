@@ -2,16 +2,95 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from clawteam.board.collector import BoardCollector
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_ALLOWED_PROXY_HOSTS = {
+    "api.github.com",
+    "github.com",
+    "raw.githubusercontent.com",
+}
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects for proxied fetches."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(newurl, code, msg, headers, fp)
+
+
+def _is_blocked_hostname(hostname: str) -> bool:
+    host = hostname.strip().lower()
+    if host in {"localhost"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+    )
+
+
+def _normalize_proxy_target(target_url: str) -> str:
+    parsed = urlparse(target_url)
+    if parsed.scheme != "https":
+        raise ValueError("Proxy only allows https URLs")
+
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        raise ValueError("Proxy URL must include a hostname")
+    if _is_blocked_hostname(hostname):
+        raise ValueError("Proxy target is not allowed")
+
+    if hostname == "github.com":
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) == 2:
+            return f"https://api.github.com/repos/{parts[0]}/{parts[1]}/readme"
+        return target_url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+
+    if hostname not in _ALLOWED_PROXY_HOSTS:
+        raise ValueError("Proxy only allows GitHub-hosted content")
+
+    return target_url
+
+
+def _fetch_proxy_content(target_url: str) -> bytes:
+    normalized = _normalize_proxy_target(target_url)
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    req = urllib.request.Request(normalized, headers={"User-Agent": "ClawTeam-Server"})
+    with opener.open(req, timeout=10) as resp:
+        final_url = resp.geturl()
+        _normalize_proxy_target(final_url)
+        body = resp.read()
+
+    if normalized.startswith("https://api.github.com/repos/") and final_url == normalized:
+        payload = json.loads(body.decode("utf-8"))
+        download_url = payload.get("download_url")
+        if not download_url:
+            raise ValueError("GitHub README proxy target has no downloadable content")
+        normalized = _normalize_proxy_target(download_url)
+        req = urllib.request.Request(normalized, headers={"User-Agent": "ClawTeam-Server"})
+        with opener.open(req, timeout=10) as resp:
+            _normalize_proxy_target(resp.geturl())
+            return resp.read()
+
+    return body
 
 
 @dataclass
@@ -65,8 +144,47 @@ class BoardHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Team name required")
                 return
             self._serve_sse(team_name)
+        elif path.startswith("/api/proxy"):
+            query = parse_qs(urlparse(self.path).query)
+            target_url = query.get("url", [""])[0]
+            if not target_url:
+                self.send_error(400, "URL required")
+                return
+            try:
+                content = _fetch_proxy_content(target_url)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(content)
+            except ValueError as e:
+                self.send_error(403, str(e))
+            except Exception as e:
+                self.send_error(500, str(e))
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        if path.startswith("/api/team/") and path.endswith("/task"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[3] == "task":
+                team_name = parts[2]
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8")
+                try:
+                    payload = json.loads(body)
+                    from clawteam.team.tasks import TaskStore
+                    store = TaskStore(team_name)
+                    task = store.create(
+                        subject=payload.get("subject", ""),
+                        description=payload.get("description", ""),
+                        owner=payload.get("owner", "")
+                    )
+                    self._serve_json({"status": "ok", "task_id": task.id})
+                except Exception as e:
+                    self.send_error(400, str(e))
+                return
+        self.send_error(404)
 
     def _serve_static(self, filename: str, content_type: str):
         filepath = _STATIC_DIR / filename

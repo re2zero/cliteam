@@ -8,6 +8,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from clawteam.fileutil import atomic_write_text
+
 
 class AgentProfile(BaseModel):
     """Reusable agent runtime profile for spawn/launch."""
@@ -35,11 +37,23 @@ class AgentPreset(BaseModel):
     client_overrides: dict[str, AgentProfile] = Field(default_factory=dict)
 
 
+class HookDef(BaseModel):
+    """A user-configurable event hook (stored in config)."""
+
+    event: str = ""
+    action: str = "shell"  # "shell" | "python"
+    command: str = ""
+    priority: int = 0
+    enabled: bool = True
+
+
 class ClawTeamConfig(BaseModel):
     data_dir: str = ""
     user: str = ""
     default_team: str = ""
+    default_profile: str = ""
     transport: str = ""
+    task_store: str = ""  # "file" (default) — extensible for redis/sql later
     workspace: str = "auto"  # "auto" | "always" | "never" | ""
     default_backend: str = "tmux"  # "tmux" | "subprocess"
     skip_permissions: bool = True  # pass --dangerously-skip-permissions to claude
@@ -51,6 +65,12 @@ class ClawTeamConfig(BaseModel):
     presets: dict[str, AgentPreset] = Field(default_factory=dict)
     spawn_prompt_delay: float = 2.0  # fallback wait (seconds) if TUI ready-detection times out
     spawn_ready_timeout: float = 30.0  # max seconds to poll for TUI readiness before fallback
+    hooks: list[HookDef] = Field(default_factory=list)
+    plugins: list[str] = Field(default_factory=list)
+
+
+# Alias for code that uses the harness naming
+HarnessConfig = ClawTeamConfig
 
 
 def config_path() -> Path:
@@ -71,12 +91,8 @@ def load_config() -> ClawTeamConfig:
 
 
 def save_config(cfg: ClawTeamConfig) -> None:
-    """Atomically write config to disk (tmp + rename)."""
-    p = config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(cfg.model_dump_json(indent=2), encoding="utf-8")
-    tmp.rename(p)
+    """Atomically write config to disk (mkstemp + replace)."""
+    atomic_write_text(config_path(), cfg.model_dump_json(indent=2))
 
 
 def get_effective(key: str) -> tuple[str, str]:
@@ -88,7 +104,9 @@ def get_effective(key: str) -> tuple[str, str]:
         "data_dir": "CLAWTEAM_DATA_DIR",
         "user": "CLAWTEAM_USER",
         "default_team": "CLAWTEAM_TEAM_NAME",
+        "default_profile": "CLAWTEAM_DEFAULT_PROFILE",
         "transport": "CLAWTEAM_TRANSPORT",
+        "task_store": "CLAWTEAM_TASK_STORE",
         "workspace": "CLAWTEAM_WORKSPACE",
         "default_backend": "CLAWTEAM_DEFAULT_BACKEND",
         "skip_permissions": "CLAWTEAM_SKIP_PERMISSIONS",

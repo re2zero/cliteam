@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from clawteam.config import AgentProfile, load_config
+from clawteam.config import AgentProfile, get_effective, load_config
 
 
 def load_profile(name: str) -> AgentProfile:
@@ -41,6 +41,46 @@ def remove_profile(name: str) -> bool:
 def list_profiles() -> dict[str, AgentProfile]:
     """Return all configured profiles."""
     return load_config().profiles
+
+
+def resolve_profile_name(
+    explicit_profile: str | None,
+    *,
+    command: list[str] | None = None,
+) -> str | None:
+    """Resolve which profile should be used when spawning an agent.
+
+    Priority:
+    1. Explicit ``--profile``
+    2. No implicit profile when an explicit command is provided
+    3. Configured ``default_profile``
+    4. The only configured profile, when exactly one exists
+    5. None (legacy fallback path remains available to callers)
+    """
+
+    if explicit_profile:
+        return explicit_profile
+
+    if command:
+        return None
+
+    profiles = list_profiles()
+    default_profile, _ = get_effective("default_profile")
+    if default_profile:
+        if default_profile not in profiles:
+            raise ValueError(f"Configured default_profile '{default_profile}' was not found")
+        return default_profile
+
+    if len(profiles) == 1:
+        return next(iter(profiles))
+
+    if len(profiles) > 1:
+        raise ValueError(
+            "Multiple profiles are configured. Set `default_profile`, pass `--profile`, "
+            "or provide an explicit command."
+        )
+
+    return None
 
 
 def apply_profile(
@@ -114,7 +154,7 @@ def _command_has_model_arg(command: list[str]) -> bool:
 
 
 def _model_flag(agent: str) -> str | None:
-    if agent in {"claude", "claude-code", "codex", "codex-cli", "gemini", "kimi"}:
+    if agent in {"claude", "claude-code", "codex", "codex-cli", "gemini", "kimi", "pi"}:
         return "--model"
     return None
 

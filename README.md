@@ -364,16 +364,24 @@ Templates are TOML files — **create your own team archetypes** for any domain.
 ```bash
 pip install clawteam
 
+# Or install into an isolated user venv at ~/.clawteam/.venv
+scripts/install_clawteam.sh
+
 # Or from source
 git clone https://github.com/HKUDS/ClawTeam.git
 cd ClawTeam
 pip install -e .
 
+# Or install this checkout into ~/.clawteam/.venv
+scripts/clawteam_local_install
+
 # Optional: P2P transport (ZeroMQ)
 pip install -e ".[p2p]"
 ```
 
-Requires **Python 3.10+**, **tmux**, and a CLI coding agent (e.g. `claude`, `codex`). Python dependencies: `typer`, `pydantic`, `rich`.
+Requires **Python 3.10+**, **tmux**, and a CLI coding agent (e.g. `claude`, `codex`). The install scripts create/reuse `~/.clawteam/.venv`, link `~/.local/bin/clawteam`, and install/update the bundled `clawteam` skill for detected clients.
+
+Skill install targets are detected from existing config directories, including Claude Code, Codex, Gemini CLI, OpenClaw, OpenCode, Nanobot, Cursor, OpenHarness (`~/.openharness/skills`), and Ohmo (`~/.ohmo/skills`).
 
 All `spawn` examples assume the agent CLI you name is already installed and available on `PATH`.
 
@@ -459,6 +467,10 @@ clawteam preset show moonshot-cn
 # Generate a reusable runtime profile from a preset
 clawteam preset generate-profile moonshot-cn claude --name claude-kimi
 
+# MiniMax (M2.7) — global or China endpoint
+clawteam preset generate-profile minimax-global claude --name claude-minimax
+clawteam preset generate-profile minimax-cn claude --name claude-minimax-cn
+
 # Or use the interactive TUI
 clawteam profile wizard
 
@@ -467,6 +479,7 @@ clawteam profile doctor claude
 
 # Smoke-test the profile before spawning workers
 MOONSHOT_API_KEY=... clawteam profile test claude-kimi
+MINIMAX_API_KEY=... clawteam profile test claude-minimax
 ```
 
 Rules of thumb:
@@ -537,7 +550,7 @@ All examples below assume the corresponding CLI already runs standalone on your 
 | [Cursor](https://cursor.com) | `clawteam spawn subprocess cursor --team ...` | 🔮 Experimental |
 | Custom scripts | `clawteam spawn subprocess python --team ...` | ✅ Full support |
 
-For provider-aware setups such as Claude Code via Moonshot Kimi or Gemini via
+For provider-aware setups such as Claude Code via Moonshot Kimi, MiniMax, or Gemini via
 Vertex, use `profile` + `preset` and then spawn with `--profile`.
 
 ---
@@ -699,6 +712,9 @@ clawteam config health
 | `workspace` | `CLAWTEAM_WORKSPACE` | `auto` | `auto` / `always` / `never` |
 | `default_backend` | `CLAWTEAM_DEFAULT_BACKEND` | `tmux` | `tmux` or `subprocess` |
 | `skip_permissions` | `CLAWTEAM_SKIP_PERMISSIONS` | `true` | Auto-approve agent tools |
+
+Legacy aliases:
+`OH_*` env vars are still accepted for compatibility, but new docs and examples use `CLAWTEAM_*`.
 
 </details>
 

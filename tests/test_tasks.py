@@ -75,6 +75,18 @@ class TestTaskUpdate:
         updated = store.update(t.id, owner="bob")
         assert updated.owner == "bob"
 
+    def test_update_in_progress_auto_claims_owner_from_caller(self, store):
+        t = store.create("task")
+        with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+            updated = store.update(t.id, status=TaskStatus.in_progress, caller="bob")
+        assert updated.owner == "bob"
+
+    def test_update_in_progress_keeps_existing_owner(self, store):
+        t = store.create("task", owner="alice")
+        with patch("clawteam.spawn.registry.is_agent_alive", return_value=None):
+            updated = store.update(t.id, status=TaskStatus.in_progress, caller="bob")
+        assert updated.owner == "alice"
+
     def test_update_priority(self, store):
         t = store.create("task")
         updated = store.update(t.id, priority=TaskPriority.high)

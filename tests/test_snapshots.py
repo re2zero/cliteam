@@ -1,6 +1,5 @@
 """Tests for clawteam.team.snapshot — team state checkpoint/restore."""
 
-import fcntl
 import json
 
 import pytest
@@ -10,6 +9,7 @@ from clawteam.team.manager import TeamManager
 from clawteam.team.models import get_data_dir
 from clawteam.team.snapshot import SnapshotManager, SnapshotMeta, _snapshots_root
 from clawteam.team.tasks import TaskStore
+from clawteam.transport.file import try_lock
 
 
 def _setup_team(team_name: str) -> None:
@@ -147,7 +147,7 @@ class TestSnapshotCreate:
         )
 
         with consumed.open("rb") as locked_file:
-            fcntl.flock(locked_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(locked_file)
 
             meta = SnapshotManager(team_with_data).create()
             path = _snapshots_root(team_with_data) / f"snap-{meta.id}.json"

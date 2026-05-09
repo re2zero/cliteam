@@ -387,7 +387,7 @@ ClawTeam에는 `skills/clawteam/`에 재사용 가능한 skill이 들어 있습�
 이 skill을 `~/.claude/skills/clawteam`에 설치한 뒤, 이렇게 프롬프트를 주면 됩니다.
 
 ```
-"웹 앱을 만들어줘. 작업은 clawteam으로 여러 에이전트에게 나눠서 진행해."
+"웹 앱을 만들어줘. 작업은 clawteam로 여러 에이전트에게 나눠서 진행해."
 ```
 
 **Codex**
@@ -592,6 +592,9 @@ clawteam config health
 | `workspace` | `CLAWTEAM_WORKSPACE` | `auto` | `auto` / `always` / `never` |
 | `default_backend` | `CLAWTEAM_DEFAULT_BACKEND` | `tmux` | `tmux` 또는 `subprocess` |
 | `skip_permissions` | `CLAWTEAM_SKIP_PERMISSIONS` | `true` | 에이전트 도구 자동 승인 |
+
+레거시 별칭:
+호환성을 위해 `OH_*` 환경 변수도 계속 인식하지만, 새 문서와 예시는 `CLAWTEAM_*`를 사용합니다.
 
 </details>
 

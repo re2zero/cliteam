@@ -1,6 +1,6 @@
 """Agent prompt builder — identity + task + context awareness.
 
-Coordination knowledge (how to use clawteam CLI) is provided
+Coordination knowledge (how to use the clawteam CLI) is provided
 by the ClawTeam Skill, not duplicated here.
 """
 
@@ -83,6 +83,7 @@ def build_agent_prompt(
         "",
         "## Coordination Protocol\n",
         f"- Use `clawteam task list {team_name} --owner {agent_name}` to see your tasks.",
+        f"- If that list is empty, check `clawteam task list {team_name}` and your inbox before declaring yourself idle.",
         f"- Starting a task: `clawteam task update {team_name} <task-id> --status in_progress`",
         "- Before marking a task completed, commit your changes in this repository with git.",
         '- Use a clear commit message, e.g. `git add -A && git commit -m "Implement <task summary>"`.',
@@ -92,11 +93,13 @@ def build_agent_prompt(
         "- If you are blocked or need help, message the leader:",
         f'  `clawteam inbox send {team_name} {leader_name} "Need help: <description>"`',
         f"- After finishing work, report your costs: `clawteam cost report {team_name} --input-tokens <N> --output-tokens <N> --cost-cents <N>`",
-        f"- Before finishing, save your session: `clawteam session save {team_name} --session-id <id>`",
         "- Do not exit after the first task unless the leader explicitly tells you to stop.",
         "",
         "## Worker Loop Protocol\n",
+        "- For ongoing jobs, do not start a detached daemon/watch loop and then immediately exit.",
+        "- Keep the monitoring/reporting loop in the foreground, or keep a foreground watchdog alive that continues checking health and sending updates.",
         f"- After finishing your current task batch, re-check `clawteam task list {team_name} --owner {agent_name}`.",
+        f"- If that still shows no tasks, scan `clawteam task list {team_name}` for pending work that matches your assignment before you go idle.",
         f"- Then check for new instructions with `clawteam inbox receive {team_name} --agent {agent_name}`.",
         f"- If you become idle, notify the leader with `clawteam lifecycle idle {team_name}` and continue checking for new work.",
         "- Repeat this loop until the leader confirms shutdown or there is truly no more work to do.",

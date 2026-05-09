@@ -7,6 +7,7 @@ from clawteam.config import ClawTeamConfig, load_config, save_config
 from clawteam.team.mailbox import MailboxManager
 from clawteam.team.manager import TeamManager
 from clawteam.team.models import MessageType
+from clawteam.team.routing_policy import DefaultRoutingPolicy, RuntimeEnvelope
 
 
 def test_config_cli_supports_all_keys_and_bool_values(tmp_path):
@@ -23,6 +24,10 @@ def test_config_cli_supports_all_keys_and_bool_values(tmp_path):
     result = runner.invoke(app, ["config", "set", "workspace", "never"], env=env)
     assert result.exit_code == 0
     assert load_config().workspace == "never"
+
+    result = runner.invoke(app, ["config", "set", "default_profile", "gemini-main"], env=env)
+    assert result.exit_code == 0
+    assert load_config().default_profile == "gemini-main"
 
     result = runner.invoke(app, ["config", "get", "workspace"], env=env)
     assert result.exit_code == 0
@@ -101,6 +106,67 @@ def test_team_request_join_timeout_returns_pending_instead_of_error(tmp_path):
     assert result.exit_code == 0
     assert "Still pending." in result.output
     assert "join-status demo" in result.output
+
+
+def test_inbox_send_reads_content_from_stdin_when_argument_missing(tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+        "CLAWTEAM_AGENT_ID": "worker001",
+        "CLAWTEAM_AGENT_NAME": "worker",
+    }
+
+    TeamManager.create_team(
+        name="demo",
+        leader_name="leader",
+        leader_id="leader001",
+    )
+
+    result = runner.invoke(
+        app,
+        ["inbox", "send", "demo", "leader"],
+        env=env,
+        input="HELLO FROM STDIN\n",
+    )
+
+    assert result.exit_code == 0
+    messages = MailboxManager("demo").receive("leader")
+    assert len(messages) == 1
+    assert messages[0].content == "HELLO FROM STDIN"
+
+
+def test_lifecycle_should_keepalive_stops_when_shutdown_approved(tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+
+    TeamManager.create_team(
+        name="demo",
+        leader_name="leader",
+        leader_id="leader001",
+    )
+    TeamManager.add_member("demo", "worker", agent_id="worker001", agent_type="codex")
+
+    mailbox = MailboxManager("demo")
+    mailbox.send(
+        from_agent="leader",
+        to="worker",
+        msg_type=MessageType.shutdown_approved,
+        request_id="req-1",
+        content="worker shutting down.",
+    )
+
+    result = runner.invoke(
+        app,
+        ["lifecycle", "should-keepalive", "--team", "demo", "--agent", "worker"],
+        env=env,
+    )
+
+    assert result.exit_code == 1
+
 
 
 def test_team_join_status_reports_approval(tmp_path):
@@ -260,6 +326,105 @@ def test_team_status_uses_configured_timezone(tmp_path):
     assert "CST" in result.output
 
 
+def test_runtime_inject_cli_invokes_tmux_backend(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+    captured = {}
+
+    def fake_inject(self, team, agent_name, envelope):
+        captured["team"] = team
+        captured["agent"] = agent_name
+        captured["envelope"] = envelope
+        return True, "ok"
+
+    monkeypatch.setattr("clawteam.spawn.tmux_backend.TmuxBackend.inject_runtime_message", fake_inject)
+
+    result = runner.invoke(
+        app,
+        [
+            "runtime",
+            "inject",
+            "demo",
+            "worker",
+            "--source",
+            "leader",
+            "--summary",
+            "Auth module complete.",
+            "--evidence",
+            "12 tests passed",
+            "--recommended-next-action",
+            "Begin integration task T5.",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert captured["team"] == "demo"
+    assert captured["agent"] == "worker"
+    assert captured["envelope"].summary == "Auth module complete."
+    assert captured["envelope"].evidence == ["12 tests passed"]
+    assert captured["envelope"].recommended_next_action == "Begin integration task T5."
+
+
+def test_runtime_inject_cli_uses_registered_backend(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+    TeamManager.create_team(
+        name="demo",
+        leader_name="leader",
+        leader_id="leader001",
+    )
+    from clawteam.spawn.registry import register_agent
+
+    register_agent("demo", "worker", backend="wsh", block_id="block-1")
+    captured = {}
+
+    class StubBackend:
+        def inject_runtime_message(self, team, agent_name, envelope):
+            captured["team"] = team
+            captured["agent"] = agent_name
+            captured["envelope"] = envelope
+            return True, "ok"
+
+    monkeypatch.setattr("clawteam.cli.commands._resolve_runtime_backend", lambda team, agent: ("wsh", StubBackend()))
+
+    result = runner.invoke(
+        app,
+        ["runtime", "inject", "demo", "worker", "--summary", "Queued update"],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert captured["team"] == "demo"
+    assert captured["agent"] == "worker"
+    assert captured["envelope"].summary == "Queued update"
+
+
+def test_runtime_state_cli_reports_pending_routes(tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+    policy = DefaultRoutingPolicy(team_name="demo", throttle_seconds=30)
+    first = RuntimeEnvelope(source="leader", target="worker", summary="Initial update")
+    first_decision = policy.decide(first)
+    policy.record_dispatch_result(first_decision, success=True)
+    policy.decide(RuntimeEnvelope(source="leader", target="worker", summary="Second update"))
+
+    result = runner.invoke(app, ["runtime", "state", "demo"], env=env)
+
+    assert result.exit_code == 0
+    assert "leader -> worker" in result.output
+    assert "pending=1" in result.output
+
+
 def test_team_add_member_cli_adds_member_directly(tmp_path):
     runner = CliRunner()
     env = {
@@ -304,3 +469,179 @@ def test_board_update_cli_is_a_compatibility_alias(tmp_path):
 
     assert result.exit_code == 0
     assert "derived automatically" in result.output
+
+
+def test_lifecycle_check_zombies_reports_clean_state(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+
+    monkeypatch.setattr("clawteam.spawn.registry.list_zombie_agents", lambda team, max_hours=2.0: [])
+
+    result = runner.invoke(app, ["lifecycle", "check-zombies", "--team", "demo"], env=env)
+
+    assert result.exit_code == 0
+    assert "No zombie agents detected" in result.output
+
+
+def test_lifecycle_check_zombies_exits_nonzero_when_found(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+
+    monkeypatch.setattr(
+        "clawteam.spawn.registry.list_zombie_agents",
+        lambda team, max_hours=2.0: [
+            {
+                "agent_name": "worker",
+                "pid": 4321,
+                "backend": "subprocess",
+                "spawned_at": 0.0,
+                "running_hours": 3.5,
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["lifecycle", "check-zombies", "--team", "demo"], env=env)
+
+    assert result.exit_code == 1
+    assert "zombie agent(s) detected" in result.output
+    assert "worker" in result.output
+    assert "process manager" in result.output
+
+
+def test_runtime_watch_cli_uses_runtime_router(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+        "CLAWTEAM_USER": "alice",
+        "CLAWTEAM_AGENT_ID": "worker001",
+        "CLAWTEAM_AGENT_NAME": "worker",
+    }
+    TeamManager.create_team(
+        name="demo",
+        leader_name="worker",
+        leader_id="worker001",
+        user="alice",
+    )
+    captured = {}
+
+    def fake_watch(self):
+        captured["agent"] = self.agent_name
+        captured["runtime_router"] = self.runtime_router
+
+    monkeypatch.setattr("clawteam.team.watcher.InboxWatcher.watch", fake_watch)
+
+    result = runner.invoke(app, ["runtime", "watch", "demo"], env=env)
+
+    assert result.exit_code == 0
+    assert captured["agent"] == "alice_worker"
+    assert captured["runtime_router"] is not None
+    assert captured["runtime_router"].agent_name == "worker"
+
+
+def test_runtime_watch_cli_rejects_subprocess_agents(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+        "CLAWTEAM_USER": "alice",
+        "CLAWTEAM_AGENT_ID": "worker001",
+        "CLAWTEAM_AGENT_NAME": "worker",
+    }
+    TeamManager.create_team(
+        name="demo",
+        leader_name="worker",
+        leader_id="worker001",
+        user="alice",
+    )
+    from clawteam.spawn.registry import register_agent
+
+    register_agent("demo", "worker", backend="subprocess", pid=1234)
+
+    result = runner.invoke(app, ["runtime", "watch", "demo"], env=env)
+
+    assert result.exit_code == 1
+    assert "not supported for subprocess agents" in result.output
+
+
+def test_run_cli_auto_creates_team_and_spawns_wrapped_agent(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+    captured: dict[str, object] = {}
+
+    class FakeBackend:
+        def spawn(self, **kwargs):
+            captured.update(kwargs)
+            return "Agent spawned"
+
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda name: FakeBackend())
+
+    result = runner.invoke(
+        app,
+        ["run", "claude", "--team", "demo"],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert "Agent spawned" in result.output
+
+    team = TeamManager.get_team("demo")
+    assert team is not None
+    assert len(team.members) == 1
+    assert team.members[0].name.startswith("claude-")
+    assert team.members[0].agent_type == "claude"
+    assert team.lead_agent_id == team.members[0].agent_id
+    assert captured["team_name"] == "demo"
+    assert captured["agent_name"] == team.members[0].name
+    assert captured["agent_id"] == team.members[0].agent_id
+
+
+def test_run_cli_resume_reuses_existing_leader_and_session(monkeypatch, tmp_path):
+    runner = CliRunner()
+    env = {
+        "HOME": str(tmp_path),
+        "CLAWTEAM_DATA_DIR": str(tmp_path / ".clawteam"),
+    }
+    captured: dict[str, object] = {}
+
+    TeamManager.create_team(
+        name="demo",
+        leader_name="leader",
+        leader_id="leader001",
+        leader_agent_type="claude",
+    )
+
+    class FakeBackend:
+        def spawn(self, **kwargs):
+            captured.update(kwargs)
+            return "Agent spawned"
+
+    class FakeSession:
+        session_id = "sess-123"
+
+    monkeypatch.setattr("clawteam.spawn.get_backend", lambda name: FakeBackend())
+    monkeypatch.setattr(
+        "clawteam.spawn.sessions.SessionStore.load",
+        lambda self, agent_name: FakeSession() if agent_name == "leader" else None,
+    )
+
+    result = runner.invoke(
+        app,
+        ["run", "claude", "--team", "demo", "--resume"],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert "Resuming session: sess-123" in result.output
+    assert captured["agent_name"] == "leader"
+    assert captured["agent_id"] == "leader001"
+    assert captured["command"] == ["claude", "--resume", "sess-123"]
